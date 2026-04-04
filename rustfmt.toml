@@ -1,0 +1,6 @@
+# See https://rust-lang.github.io/rustfmt/
+# Only stable options are used to avoid requiring nightly.
+
+edition = "2024"
+max_width = 100
+use_small_heuristics = "Default"

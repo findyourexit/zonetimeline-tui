@@ -1,0 +1,231 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  BINARY_NAME: ztl
+
+jobs:
+  build:
+    name: Build (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+            cross: false
+            archive: tar.gz
+          - target: x86_64-apple-darwin
+            runner: macos-13
+            cross: false
+            archive: tar.gz
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            cross: true
+            archive: tar.gz
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-latest
+            cross: true
+            archive: tar.gz
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+            cross: false
+            archive: zip
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Install cross
+        if: matrix.cross
+        run: cargo install cross --locked
+
+      - name: Build
+        run: |
+          if [ "${{ matrix.cross }}" = "true" ]; then
+            cross build --release --target ${{ matrix.target }}
+          else
+            cargo build --release --target ${{ matrix.target }}
+          fi
+        shell: bash
+
+      - name: Package (unix)
+        if: matrix.archive == 'tar.gz'
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          ARCHIVE="${BINARY_NAME}-${VERSION}-${{ matrix.target }}.tar.gz"
+          STAGING="${BINARY_NAME}-${VERSION}-${{ matrix.target }}"
+          mkdir "${STAGING}"
+          cp "target/${{ matrix.target }}/release/${BINARY_NAME}" "${STAGING}/"
+          cp LICENSE README.md "${STAGING}/"
+          tar czf "${ARCHIVE}" "${STAGING}"
+          echo "ARCHIVE=${ARCHIVE}" >> "$GITHUB_ENV"
+        shell: bash
+
+      - name: Package (windows)
+        if: matrix.archive == 'zip'
+        run: |
+          $VERSION = "$env:GITHUB_REF_NAME" -replace '^v', ''
+          $ARCHIVE = "${env:BINARY_NAME}-${VERSION}-${{ matrix.target }}.zip"
+          $STAGING = "${env:BINARY_NAME}-${VERSION}-${{ matrix.target }}"
+          New-Item -ItemType Directory -Path $STAGING
+          Copy-Item "target/${{ matrix.target }}/release/${env:BINARY_NAME}.exe" "$STAGING/"
+          Copy-Item LICENSE, README.md "$STAGING/"
+          Compress-Archive -Path $STAGING -DestinationPath $ARCHIVE
+          echo "ARCHIVE=$ARCHIVE" >> $env:GITHUB_ENV
+        shell: pwsh
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.target }}
+          path: ${{ env.ARCHIVE }}
+          if-no-files-found: error
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Extract changelog
+        id: changelog
+        run: |
+          # Extract content between ## [Unreleased] and the next ## [ heading
+          BODY=$(awk '/^## \[Unreleased\]/{flag=1; next} /^## \[/{flag=0} flag' CHANGELOG.md \
+            | sed -e '/./,$!d' -e :a -e '/^\n*$/{$d;N;ba}')
+          {
+            echo "body<<CHANGELOG_EOF"
+            echo "$BODY"
+            echo "CHANGELOG_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Generate checksums
+        run: |
+          cd artifacts
+          sha256sum ztl-* > checksums.txt
+          cat checksums.txt
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          body: ${{ steps.changelog.outputs.body }}
+          files: |
+            artifacts/ztl-*
+            artifacts/checksums.txt
+
+      - name: Promote changelog
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          DATE=$(date -u +%Y-%m-%d)
+          git checkout main
+          sed -i "s/^## \[Unreleased\]/## [Unreleased]\n\n## [${VERSION}] - ${DATE}/" CHANGELOG.md
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add CHANGELOG.md
+          git diff --cached --quiet || git commit -m "chore: promote changelog for v${VERSION}"
+          git push origin main
+
+  homebrew:
+    name: Update Homebrew formula
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download macOS artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Compute SHA256 digests
+        id: sha
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          SHA_ARM64=$(sha256sum "artifacts/ztl-${VERSION}-aarch64-apple-darwin.tar.gz" | awk '{print $1}')
+          SHA_X86_64=$(sha256sum "artifacts/ztl-${VERSION}-x86_64-apple-darwin.tar.gz" | awk '{print $1}')
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "sha_arm64=${SHA_ARM64}" >> "$GITHUB_OUTPUT"
+          echo "sha_x86_64=${SHA_X86_64}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout homebrew-tap
+        uses: actions/checkout@v6
+        with:
+          repository: findyourexit/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-tap
+
+      - name: Update formula
+        run: |
+          VERSION="${{ steps.sha.outputs.version }}"
+          SHA_ARM64="${{ steps.sha.outputs.sha_arm64 }}"
+          SHA_X86_64="${{ steps.sha.outputs.sha_x86_64 }}"
+
+          mkdir -p homebrew-tap/Formula
+
+          cat > homebrew-tap/Formula/ztl.rb << 'FORMULA'
+          class Ztl < Formula
+            desc "A terminal UI for comparing multiple time zones side by side"
+            homepage "https://github.com/findyourexit/zonetimeline-tui"
+            license "MIT"
+            version "VERSION_PLACEHOLDER"
+
+            on_macos do
+              if Hardware::CPU.arm?
+                url "https://github.com/findyourexit/zonetimeline-tui/releases/download/vVERSION_PLACEHOLDER/ztl-VERSION_PLACEHOLDER-aarch64-apple-darwin.tar.gz"
+                sha256 "SHA_ARM64_PLACEHOLDER"
+              else
+                url "https://github.com/findyourexit/zonetimeline-tui/releases/download/vVERSION_PLACEHOLDER/ztl-VERSION_PLACEHOLDER-x86_64-apple-darwin.tar.gz"
+                sha256 "SHA_X86_64_PLACEHOLDER"
+              end
+            end
+
+            def install
+              bin.install "ztl"
+            end
+
+            test do
+              assert_match "ztl", shell_output("#{bin}/ztl --version")
+            end
+          end
+          FORMULA
+
+          # Remove leading whitespace from heredoc indentation
+          sed -i 's/^          //' homebrew-tap/Formula/ztl.rb
+
+          # Substitute placeholders with actual values
+          sed -i "s/VERSION_PLACEHOLDER/${VERSION}/g" homebrew-tap/Formula/ztl.rb
+          sed -i "s/SHA_ARM64_PLACEHOLDER/${SHA_ARM64}/g" homebrew-tap/Formula/ztl.rb
+          sed -i "s/SHA_X86_64_PLACEHOLDER/${SHA_X86_64}/g" homebrew-tap/Formula/ztl.rb
+
+      - name: Commit and push formula
+        run: |
+          cd homebrew-tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/ztl.rb
+          git commit -m "ztl ${{ steps.sha.outputs.version }}"
+          git push

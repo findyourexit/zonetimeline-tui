@@ -1,0 +1,25 @@
+name: Renovate
+
+on:
+  # Match the schedule window in renovate.json ("before 9am on monday" UTC)
+  schedule:
+    - cron: "0 3 * * 1" # Every Monday at 03:00 UTC
+  # Allow manual runs for testing / on-demand updates
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  renovate:
+    name: Renovate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: renovatebot/github-action@v42.1.0
+        with:
+          configurationFile: renovate.json
+          token: ${{ secrets.RENOVATE_TOKEN }}

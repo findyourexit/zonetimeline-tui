@@ -1,0 +1,50 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "timezone": "UTC",
+  "schedule": ["before 9am on monday"],
+  "automergeType": "pr",
+  "automergeStrategy": "rebase",
+  "platformAutomerge": true,
+  "labels": ["dependencies"],
+  "commitMessagePrefix": "chore(deps):",
+  "packageRules": [
+    {
+      "description": "Group and automerge Rust minor/patch updates",
+      "matchManagers": ["cargo"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "groupName": "rust minor+patch",
+      "automerge": true
+    },
+    {
+      "description": "Rust major updates require manual review",
+      "matchManagers": ["cargo"],
+      "matchUpdateTypes": ["major"],
+      "automerge": false
+    },
+    {
+      "description": "Group and automerge GitHub Actions minor/patch updates",
+      "matchManagers": ["github-actions"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "groupName": "github-actions minor+patch",
+      "automerge": true
+    },
+    {
+      "description": "Group and automerge GitHub Actions digest updates",
+      "matchManagers": ["github-actions"],
+      "matchUpdateTypes": ["digest"],
+      "groupName": "github-actions digest",
+      "automerge": true
+    },
+    {
+      "description": "GitHub Actions major updates require manual review",
+      "matchManagers": ["github-actions"],
+      "matchUpdateTypes": ["major"],
+      "automerge": false
+    }
+  ],
+  "lockFileMaintenance": {
+    "enabled": true,
+    "automerge": true
+  }
+}

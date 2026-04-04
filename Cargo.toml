@@ -1,0 +1,36 @@
+[package]
+name = "zonetimeline-tui"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "A terminal tool for visually comparing time zones"
+authors = ["Tom Larcher <tom.larcher@gmail.com>"]
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/findyourexit/zonetimeline-tui"
+homepage = "https://github.com/findyourexit/zonetimeline-tui"
+keywords = ["timezone", "tui", "terminal", "cli", "ratatui"]
+categories = ["command-line-utilities", "date-and-time"]
+
+[[bin]]
+name = "ztl"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+chrono = { version = "0.4", default-features = true }
+chrono-tz = "0.10"
+clap = { version = "4.6", features = ["derive"] }
+crossterm = "0.29"
+directories = "6"
+iana-time-zone = "0.1"
+ratatui = "0.30"
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+toml = "1"
+
+[dev-dependencies]
+assert_cmd = "2"
+insta = "1"
+predicates = "3"
+tempfile = "3"

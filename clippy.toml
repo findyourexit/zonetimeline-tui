@@ -1,0 +1,4 @@
+# See https://doc.rust-lang.org/clippy/lint_configuration.html
+
+# Keep suggestions compatible with the project's MSRV.
+msrv = "1.85"

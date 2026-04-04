@@ -1,0 +1,20 @@
+# Build artifacts
+/target
+
+# Editor and IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+\#*\#
+.#*
+
+# OS artifacts
+.DS_Store
+Thumbs.db
+
+# Superpowers / worktree internals
+/.superpowers
+.superpowers/
+/.worktrees
