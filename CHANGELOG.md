@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.1.0] - 2026-04-05
 
+## [0.1.0] - 2026-04-05
+
 ### Added
 
 - Interactive TUI mode with side-by-side timezone comparison
