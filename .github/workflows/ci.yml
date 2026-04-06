@@ -36,7 +36,7 @@ jobs:
         run: cargo test
 
   deny:
-    name: Dependency audit
+    name: Dependency Audit
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -56,10 +56,10 @@ jobs:
 
       - uses: taiki-e/install-action@cargo-llvm-cov
 
-      - name: Run tests with coverage
+      - name: Run Tests With Coverage
         run: cargo llvm-cov --no-report
 
-      - name: Generate coverage summary
+      - name: Generate Coverage Summary
         run: |
           cargo llvm-cov report 2>&1 | tee coverage.txt
 

@@ -51,7 +51,7 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
-      - name: Install cross
+      - name: Install Cross
         if: matrix.cross
         run: cargo install cross --locked
 
@@ -64,7 +64,7 @@ jobs:
           fi
         shell: bash
 
-      - name: Package (unix)
+      - name: Package (Unix)
         if: matrix.archive == 'tar.gz'
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
@@ -77,7 +77,7 @@ jobs:
           echo "ARCHIVE=${ARCHIVE}" >> "$GITHUB_ENV"
         shell: bash
 
-      - name: Package (windows)
+      - name: Package (Windows)
         if: matrix.archive == 'zip'
         run: |
           $VERSION = "$env:GITHUB_REF_NAME" -replace '^v', ''
@@ -90,7 +90,7 @@ jobs:
           echo "ARCHIVE=$ARCHIVE" >> $env:GITHUB_ENV
         shell: pwsh
 
-      - name: Upload artifact
+      - name: Upload Artifact
         uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.target }}
@@ -106,7 +106,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Extract changelog
+      - name: Extract Changelog
         id: changelog
         run: |
           # Extract content between ## [Unreleased] and the next ## [ heading
@@ -118,19 +118,19 @@ jobs:
             echo "CHANGELOG_EOF"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Download all artifacts
+      - name: Download All Artifacts
         uses: actions/download-artifact@v8
         with:
           path: artifacts
           merge-multiple: true
 
-      - name: Generate checksums
+      - name: Generate Checksums
         run: |
           cd artifacts
           sha256sum ztl-* > checksums.txt
           cat checksums.txt
 
-      - name: Create release
+      - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           body: ${{ steps.changelog.outputs.body }}
@@ -138,7 +138,7 @@ jobs:
             artifacts/ztl-*
             artifacts/checksums.txt
 
-      - name: Promote changelog
+      - name: Promote Changelog
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           DATE=$(date -u +%Y-%m-%d)
@@ -151,17 +151,17 @@ jobs:
           git push origin main
 
   homebrew:
-    name: Update Homebrew formula
+    name: Update Homebrew Formula
     needs: release
     runs-on: ubuntu-latest
     steps:
-      - name: Download macOS artifacts
+      - name: Download Artifacts (macOS)
         uses: actions/download-artifact@v8
         with:
           path: artifacts
           merge-multiple: true
 
-      - name: Compute SHA256 digests
+      - name: Compute SHA256 Digests
         id: sha
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
@@ -171,14 +171,14 @@ jobs:
           echo "sha_arm64=${SHA_ARM64}" >> "$GITHUB_OUTPUT"
           echo "sha_x86_64=${SHA_X86_64}" >> "$GITHUB_OUTPUT"
 
-      - name: Checkout homebrew-tap
+      - name: Checkout Homebrew Tap
         uses: actions/checkout@v6
         with:
           repository: findyourexit/homebrew-tap
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           path: homebrew-tap
 
-      - name: Update formula
+      - name: Update Formula
         run: |
           VERSION="${{ steps.sha.outputs.version }}"
           SHA_ARM64="${{ steps.sha.outputs.sha_arm64 }}"
@@ -221,11 +221,11 @@ jobs:
           sed -i "s/SHA_ARM64_PLACEHOLDER/${SHA_ARM64}/g" homebrew-tap/Formula/ztl.rb
           sed -i "s/SHA_X86_64_PLACEHOLDER/${SHA_X86_64}/g" homebrew-tap/Formula/ztl.rb
 
-      - name: Commit and push formula
+      - name: Commit & Push Formula
         run: |
           cd homebrew-tap
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add Formula/ztl.rb
-          git commit -m "ztl ${{ steps.sha.outputs.version }}"
+          git commit -m "chore(release): `ztl` version `${{ steps.sha.outputs.version }}`"
           git push
