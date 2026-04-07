@@ -7,7 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.1.0] - 2026-04-05
+### Added
+
+- Micro Mode! A new display mode, intended for super size-constrained terminal clients (inc. those running on mobile handsets)
+
+### Fixed
+
+- Broken Renovate GitHub Actions workflow
 
 ## [0.1.0] - 2026-04-05
 
