@@ -227,5 +227,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add Formula/ztl.rb
-          git commit -m "chore(release): `ztl` version `${{ steps.sha.outputs.version }}`"
+          git commit -m 'chore(release): `ztl` version `${{ steps.sha.outputs.version }}`'
           git push
