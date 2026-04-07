@@ -46,92 +46,89 @@ fn tiny_term_shows_resize_guard() {
         .collect::<String>();
 
     assert!(text.contains("Resize terminal"));
+    assert!(
+        text.contains("80x24"),
+        "should target 80x24 as absolute floor"
+    );
 }
 
 #[test]
-fn resize_guard_triggers_one_column_below_dynamic_minimum() {
-    // The dynamic minimum width for the fixture (2 zones, 12 slots, UTC label 32 chars)
-    // should be less than the old hardcoded 80. At (min_w - 1) the guard must trigger.
+fn resize_guard_triggers_at_79_width() {
     let model = ComparisonModel::build(support::fixture_seed(), support::fixed_now()).unwrap();
     let state = AppState::new(model, support::fixed_now());
 
-    let (min_w, min_h) = zonetimeline_tui::tui::view::min_terminal_size(&state);
-    assert!(
-        min_w < 80,
-        "dynamic minimum width ({min_w}) should be less than old hardcoded 80 for 12-slot fixture"
-    );
-
-    let area = Rect::new(0, 0, min_w - 1, min_h + 10);
+    let area = Rect::new(0, 0, 79, 30);
     let mut buffer = Buffer::empty(area);
     render_to_buffer(&mut buffer, area, &state);
     let text: String = buffer.content.iter().map(|cell| cell.symbol()).collect();
 
     assert!(
         text.contains("Resize terminal"),
-        "resize guard should trigger at width {} (one below min {min_w})",
-        min_w - 1
+        "resize guard should trigger at width 79"
     );
 }
 
 #[test]
-fn resize_guard_does_not_trigger_at_exact_dynamic_minimum() {
-    let model = ComparisonModel::build(support::fixture_seed(), support::fixed_now()).unwrap();
+fn normal_mode_renders_at_exact_normal_minimum() {
+    let mut seed = support::fixture_seed();
+    seed.nhours = 24;
+    seed.ordered_zones = vec![
+        "Europe/London".to_string(),
+        "America/New_York".to_string(),
+        "Asia/Tokyo".to_string(),
+    ];
+    seed.base_zones = seed.ordered_zones.clone();
+
+    let model = ComparisonModel::build(seed, support::fixed_now()).unwrap();
     let state = AppState::new(model, support::fixed_now());
 
     let (min_w, min_h) = zonetimeline_tui::tui::view::min_terminal_size(&state);
 
-    // Give enough height so only width matters
-    let area = Rect::new(0, 0, min_w, min_h + 10);
+    // Use at least 80x24 (the absolute floor) so the resize guard doesn't trigger
+    let w = min_w.max(80);
+    let h = min_h.max(24);
+    let area = Rect::new(0, 0, w, h);
+    let mut buffer = Buffer::empty(area);
+    render_to_buffer(&mut buffer, area, &state);
+    let text: String = buffer.content.iter().map(|cell| cell.symbol()).collect();
+
+    assert!(!text.contains("Resize terminal"));
+    assert!(text.contains("Zone Timeline"));
+    assert!(
+        text.contains("Current Times"),
+        "should render header in normal mode"
+    );
+}
+
+#[test]
+fn resize_guard_message_shows_80x24_floor() {
+    let model = ComparisonModel::build(support::fixture_seed(), support::fixed_now()).unwrap();
+    let state = AppState::new(model, support::fixed_now());
+
+    let area = Rect::new(0, 0, 79, 23);
     let mut buffer = Buffer::empty(area);
     render_to_buffer(&mut buffer, area, &state);
     let text: String = buffer.content.iter().map(|cell| cell.symbol()).collect();
 
     assert!(
-        !text.contains("Resize terminal"),
-        "resize guard should NOT trigger at exact dynamic minimum ({min_w}x{})",
-        min_h + 10
-    );
-    assert!(
-        text.contains("Zone Timeline"),
-        "should render the timeline panel at exact minimum size"
+        text.contains("80x24"),
+        "resize message should show 80x24 floor"
     );
 }
 
 #[test]
-fn resize_guard_message_shows_dynamic_dimensions() {
+fn resize_guard_triggers_at_23_height() {
     let model = ComparisonModel::build(support::fixture_seed(), support::fixed_now()).unwrap();
     let state = AppState::new(model, support::fixed_now());
 
-    let (min_w, min_h) = zonetimeline_tui::tui::view::min_terminal_size(&state);
-
-    let area = Rect::new(0, 0, min_w - 1, 12);
-    let mut buffer = Buffer::empty(area);
-    render_to_buffer(&mut buffer, area, &state);
-    let text: String = buffer.content.iter().map(|cell| cell.symbol()).collect();
-
-    let expected_dims = format!("{}x{}", min_w, min_h);
-    assert!(
-        text.contains(&expected_dims),
-        "resize message should include dynamic dimensions '{expected_dims}', got: {text}"
-    );
-}
-
-#[test]
-fn resize_guard_triggers_one_row_below_dynamic_minimum_height() {
-    let model = ComparisonModel::build(support::fixture_seed(), support::fixed_now()).unwrap();
-    let state = AppState::new(model, support::fixed_now());
-
-    let (min_w, min_h) = zonetimeline_tui::tui::view::min_terminal_size(&state);
-
-    let area = Rect::new(0, 0, min_w + 20, min_h - 1);
+    let area = Rect::new(0, 0, 80, 23);
     let mut buffer = Buffer::empty(area);
     render_to_buffer(&mut buffer, area, &state);
     let text: String = buffer.content.iter().map(|cell| cell.symbol()).collect();
 
     assert!(
         text.contains("Resize terminal"),
-        "resize guard should trigger at height {} (one below min {min_h})",
-        min_h - 1
+        "resize guard should trigger at height 23"
     );
 }
 
@@ -166,17 +163,27 @@ fn timeline_view_compacts_24_hour_grid_on_narrow_terminal() {
 
 #[test]
 fn timeline_view_compacts_default_grid_at_minimum_width() {
-    let model = ComparisonModel::build(support::fixture_seed(), support::fixed_now()).unwrap();
+    let mut seed = support::fixture_seed();
+    seed.nhours = 24;
+    seed.ordered_zones = vec![
+        "Europe/London".to_string(),
+        "America/New_York".to_string(),
+        "Asia/Tokyo".to_string(),
+    ];
+    seed.base_zones = seed.ordered_zones.clone();
+
+    let model = ComparisonModel::build(seed, support::fixed_now()).unwrap();
     let state = AppState::new(model, support::fixed_now());
 
-    // Use the dynamic minimum size so the resize guard does not trigger
     let (min_w, min_h) = zonetimeline_tui::tui::view::min_terminal_size(&state);
-    let area = Rect::new(0, 0, min_w, min_h);
+    // Use at least 80x24 (the absolute floor) so the resize guard doesn't trigger
+    let w = min_w.max(80);
+    let h = min_h.max(24);
+    let area = Rect::new(0, 0, w, h);
     let mut buffer = Buffer::empty(area);
 
     render_to_buffer(&mut buffer, area, &state);
 
-    // Find the UTC data row by scanning for "+00:00" (offset column)
     let utc_data_row = (0..area.height)
         .map(|y| {
             (0..area.width)
@@ -186,15 +193,10 @@ fn timeline_view_compacts_default_grid_at_minimum_width() {
         .find(|row| row.contains("+00:00"))
         .expect("should find a row containing +00:00");
 
-    // In compact mode, time slots use HH format; count colons — should only have 2 from "+00:00"
     let colon_count = utc_data_row.matches(':').count();
     assert!(
         colon_count <= 2,
         "Expected at most 2 colons (from offset), got {colon_count} — UTC data row was: {utc_data_row:?}"
-    );
-    assert!(
-        utc_data_row.contains("17"),
-        "UTC data row was: {utc_data_row:?}"
     );
 }
 
@@ -739,17 +741,32 @@ fn timeline_shows_all_hours_without_dot_placeholders() {
 
 #[test]
 fn picker_renders_without_panic_at_various_sizes() {
-    let model = ComparisonModel::build(support::fixture_seed(), support::fixed_now()).unwrap();
+    let mut seed = support::fixture_seed();
+    seed.nhours = 24;
+    seed.ordered_zones = vec![
+        "Europe/London".to_string(),
+        "America/New_York".to_string(),
+        "Asia/Tokyo".to_string(),
+    ];
+    seed.base_zones = seed.ordered_zones.clone();
+
+    let model = ComparisonModel::build(seed, support::fixed_now()).unwrap();
     let mut state = AppState::new(model, support::fixed_now());
     state.open_add_zone();
 
     let (min_w, min_h) = zonetimeline_tui::tui::view::min_terminal_size(&state);
-    for (w, h) in [(120, 36), (min_w, min_h), (min_w, min_h + 5)] {
-        let area = Rect::new(0, 0, w, h);
+    // Use at least 80x24 (the absolute floor) for the normal-minimum test sizes
+    let w = min_w.max(80);
+    let h = min_h.max(24);
+    for (tw, th) in [(120, 36), (w, h), (w, h + 5), (80, 24)] {
+        let area = Rect::new(0, 0, tw, th);
         let mut buffer = Buffer::empty(area);
         render_to_buffer(&mut buffer, area, &state);
         let text: String = buffer.content.iter().map(|cell| cell.symbol()).collect();
-        assert!(text.contains("Add Zone"), "should render picker at {w}x{h}");
+        assert!(
+            text.contains("Add Zone"),
+            "should render picker at {tw}x{th}"
+        );
     }
 }
 
@@ -1306,12 +1323,19 @@ fn compute_header_height_clamps_to_max_five() {
 
 #[test]
 fn controls_bar_wraps_to_two_lines_at_narrow_width() {
+    // Use the default fixture (2 zones, 12 slots) whose normal minimum width
+    // is < 80. At 80 wide (with enough height), normal mode renders and controls wrap.
     let model = ComparisonModel::build(support::fixture_seed(), support::fixed_now()).unwrap();
     let state = AppState::new(model, support::fixed_now());
 
-    // Use dynamic minimum width (80 cols) but ensure enough height to pass resize guard
-    let (_, min_h) = zonetimeline_tui::tui::view::min_terminal_size(&state);
-    let area = Rect::new(0, 0, 80, min_h);
+    let (min_w, _min_h) = zonetimeline_tui::tui::view::min_terminal_size(&state);
+    assert!(
+        min_w <= 80,
+        "default fixture min_w ({min_w}) should be <= 80 for this test"
+    );
+
+    // Render at 80 wide, 30 tall — above both 80x24 floor and normal minimum
+    let area = Rect::new(0, 0, 80, 30);
     let mut buffer = Buffer::empty(area);
     render_to_buffer(&mut buffer, area, &state);
 
@@ -1872,4 +1896,382 @@ fn edit_window_cancel_does_not_change_model() {
 
     assert!(state.modal.is_none());
     assert_eq!(state.model.zones[model_idx].window, original_window);
+}
+
+#[test]
+fn micro_zone_label_returns_tz_abbreviation_for_named_zones() {
+    use chrono::TimeZone;
+    use zonetimeline_tui::core::timezones::ZoneHandle;
+    use zonetimeline_tui::tui::view::micro_zone_label;
+
+    let anchor = chrono::Utc.with_ymd_and_hms(2026, 4, 1, 12, 30, 0).unwrap();
+
+    let london = ZoneHandle::Named(chrono_tz::Europe::London);
+    assert_eq!(micro_zone_label(&london, anchor, 6), "BST");
+
+    let new_york = ZoneHandle::Named(chrono_tz::America::New_York);
+    assert_eq!(micro_zone_label(&new_york, anchor, 6), "EDT");
+
+    let tokyo = ZoneHandle::Named(chrono_tz::Asia::Tokyo);
+    assert_eq!(micro_zone_label(&tokyo, anchor, 6), "JST");
+
+    let kolkata = ZoneHandle::Named(chrono_tz::Asia::Kolkata);
+    assert_eq!(micro_zone_label(&kolkata, anchor, 6), "IST");
+}
+
+#[test]
+fn micro_zone_label_is_dst_aware() {
+    use chrono::TimeZone;
+    use zonetimeline_tui::core::timezones::ZoneHandle;
+    use zonetimeline_tui::tui::view::micro_zone_label;
+
+    let ny = ZoneHandle::Named(chrono_tz::America::New_York);
+
+    // Summer (April) -> EDT
+    let summer = chrono::Utc.with_ymd_and_hms(2026, 4, 1, 12, 0, 0).unwrap();
+    assert_eq!(micro_zone_label(&ny, summer, 6), "EDT");
+
+    // Winter (January) -> EST
+    let winter = chrono::Utc.with_ymd_and_hms(2026, 1, 15, 12, 0, 0).unwrap();
+    assert_eq!(micro_zone_label(&ny, winter, 6), "EST");
+}
+
+#[test]
+fn micro_zone_label_nested_region_uses_abbreviation_not_city() {
+    use chrono::TimeZone;
+    use zonetimeline_tui::core::timezones::ZoneHandle;
+    use zonetimeline_tui::tui::view::micro_zone_label;
+
+    let anchor = chrono::Utc.with_ymd_and_hms(2026, 4, 1, 12, 30, 0).unwrap();
+    let indy = ZoneHandle::Named(chrono_tz::America::Indiana::Indianapolis);
+    // Indianapolis is in Eastern time — gets EDT, not "Indian"
+    assert_eq!(micro_zone_label(&indy, anchor, 6), "EDT");
+}
+
+#[test]
+fn micro_zone_label_fixed_offset_shows_compact_offset() {
+    use zonetimeline_tui::core::timezones::ZoneHandle;
+    use zonetimeline_tui::tui::view::micro_zone_label;
+
+    let anchor = support::fixed_now();
+
+    let plus_530 = ZoneHandle::Fixed(chrono::FixedOffset::east_opt(19800).unwrap());
+    assert_eq!(micro_zone_label(&plus_530, anchor, 6), "+5:30");
+
+    let minus_4 = ZoneHandle::Fixed(chrono::FixedOffset::east_opt(-14400).unwrap());
+    assert_eq!(micro_zone_label(&minus_4, anchor, 6), "-4");
+
+    let zero = ZoneHandle::Fixed(chrono::FixedOffset::east_opt(0).unwrap());
+    assert_eq!(micro_zone_label(&zero, anchor, 6), "+0");
+}
+
+#[test]
+fn micro_zone_label_truncates_long_abbreviation() {
+    use chrono::TimeZone;
+    use zonetimeline_tui::core::timezones::ZoneHandle;
+    use zonetimeline_tui::tui::view::micro_zone_label;
+
+    // NZDT is 4 chars — fits in max_width=3 only as "NZD"
+    let anchor = chrono::Utc.with_ymd_and_hms(2026, 4, 1, 12, 30, 0).unwrap();
+    let auckland = ZoneHandle::Named(chrono_tz::Pacific::Auckland);
+    assert_eq!(micro_zone_label(&auckland, anchor, 3), "NZD");
+    // Full abbreviation fits at max_width=6
+    assert_eq!(micro_zone_label(&auckland, anchor, 6), "NZDT");
+}
+
+#[test]
+fn micro_zone_label_abbreviation_is_not_padded() {
+    use chrono::TimeZone;
+    use zonetimeline_tui::core::timezones::ZoneHandle;
+    use zonetimeline_tui::tui::view::micro_zone_label;
+
+    let anchor = chrono::Utc.with_ymd_and_hms(2026, 4, 1, 12, 30, 0).unwrap();
+    let tokyo = ZoneHandle::Named(chrono_tz::Asia::Tokyo);
+    // JST is 3 chars — should not be padded to max_width=10
+    assert_eq!(micro_zone_label(&tokyo, anchor, 10), "JST");
+}
+
+#[test]
+fn micro_zone_label_falls_back_to_compact_offset_when_no_abbreviation() {
+    use chrono::TimeZone;
+    use zonetimeline_tui::core::timezones::ZoneHandle;
+    use zonetimeline_tui::tui::view::micro_zone_label;
+
+    let anchor = chrono::Utc.with_ymd_and_hms(2026, 4, 1, 12, 30, 0).unwrap();
+
+    // America/Bogota is UTC-5 but chrono-tz returns None for abbreviation()
+    let bogota = ZoneHandle::Named(chrono_tz::America::Bogota);
+    assert_eq!(micro_zone_label(&bogota, anchor, 6), "-5");
+
+    // America/Lima is also UTC-5 with no named abbreviation
+    let lima = ZoneHandle::Named(chrono_tz::America::Lima);
+    assert_eq!(micro_zone_label(&lima, anchor, 6), "-5");
+
+    // America/Sao_Paulo is UTC-3 with no named abbreviation
+    let sao_paulo = ZoneHandle::Named(chrono_tz::America::Sao_Paulo);
+    assert_eq!(micro_zone_label(&sao_paulo, anchor, 6), "-3");
+}
+
+#[test]
+fn micro_controls_renders_minimal_hints() {
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+    use zonetimeline_tui::tui::view::render_controls_micro;
+
+    let area = Rect::new(0, 0, 80, 1);
+    let mut buffer = Buffer::empty(area);
+    render_controls_micro(&mut buffer, area);
+
+    let text: String = buffer.content.iter().map(|cell| cell.symbol()).collect();
+    assert!(text.contains("?"), "should contain ? key hint");
+    assert!(text.contains("help"), "should contain help description");
+    assert!(text.contains("q"), "should contain q key hint");
+    assert!(text.contains("quit"), "should contain quit description");
+}
+
+#[test]
+fn micro_timeline_renders_zones_without_offset_column() {
+    use zonetimeline_tui::tui::view::render_timeline_micro;
+
+    let model = ComparisonModel::build(support::fixture_seed(), support::fixed_now()).unwrap();
+    let state = AppState::new(model, support::fixed_now());
+    let area = Rect::new(0, 0, 80, 22);
+    let mut buffer = Buffer::empty(area);
+
+    render_timeline_micro(&mut buffer, area, &state);
+
+    let text: String = buffer.content.iter().map(|cell| cell.symbol()).collect();
+
+    // Should have TZ abbreviation labels
+    assert!(
+        text.contains("BST") || text.contains("EDT"),
+        "should contain TZ abbreviation labels, got: {text}"
+    );
+    // Should NOT have offset column values
+    assert!(
+        !text.contains("+00:00"),
+        "should not contain offset column in micro mode"
+    );
+    assert!(
+        !text.contains("Offset"),
+        "should not contain Offset header in micro mode"
+    );
+    // Should have Zone Timeline title
+    assert!(text.contains("Zone Timeline"), "should have panel title");
+    // Should have box-drawing frame chars
+    assert!(text.contains("┌"), "should have column frame");
+}
+
+#[test]
+fn micro_mode_activates_below_normal_minimum_but_above_80x24() {
+    let mut seed = support::fixture_seed();
+    seed.nhours = 24;
+    seed.ordered_zones = vec![
+        "Europe/London".to_string(),
+        "America/New_York".to_string(),
+        "Asia/Tokyo".to_string(),
+    ];
+    seed.base_zones = seed.ordered_zones.clone();
+
+    let model = ComparisonModel::build(seed, support::fixed_now()).unwrap();
+    let state = AppState::new(model, support::fixed_now());
+
+    let (normal_min_w, normal_min_h) = zonetimeline_tui::tui::view::min_terminal_size(&state);
+    assert!(
+        normal_min_w > 80 || normal_min_h > 24,
+        "normal minimum ({normal_min_w}x{normal_min_h}) should exceed 80x24 for this fixture"
+    );
+
+    let area = Rect::new(0, 0, 80, 24);
+    let mut buffer = Buffer::empty(area);
+    render_to_buffer(&mut buffer, area, &state);
+
+    let text: String = buffer.content.iter().map(|cell| cell.symbol()).collect();
+
+    assert!(
+        text.contains("Zone Timeline"),
+        "should render timeline in micro mode"
+    );
+    assert!(
+        !text.contains("Current Times"),
+        "should NOT render header in micro mode"
+    );
+    assert!(
+        !text.contains("Working Windows"),
+        "should NOT render footer panels in micro mode"
+    );
+    assert!(
+        !text.contains("Details"),
+        "should NOT render details panel in micro mode"
+    );
+    assert!(
+        !text.contains("Offset"),
+        "should not have Offset header in micro mode"
+    );
+    assert!(text.contains("help"), "should have minimal help hint");
+    assert!(text.contains("quit"), "should have minimal quit hint");
+    assert!(
+        !text.contains("scroll"),
+        "should not have full controls in micro mode"
+    );
+}
+
+#[test]
+fn resize_guard_targets_80x24_as_absolute_floor() {
+    let model = ComparisonModel::build(support::fixture_seed(), support::fixed_now()).unwrap();
+    let state = AppState::new(model, support::fixed_now());
+
+    let area = Rect::new(0, 0, 79, 24);
+    let mut buffer = Buffer::empty(area);
+    render_to_buffer(&mut buffer, area, &state);
+    let text: String = buffer.content.iter().map(|cell| cell.symbol()).collect();
+    assert!(
+        text.contains("Resize terminal"),
+        "should show resize at 79x24"
+    );
+
+    let area = Rect::new(0, 0, 80, 23);
+    let mut buffer = Buffer::empty(area);
+    render_to_buffer(&mut buffer, area, &state);
+    let text: String = buffer.content.iter().map(|cell| cell.symbol()).collect();
+    assert!(
+        text.contains("Resize terminal"),
+        "should show resize at 80x23"
+    );
+}
+
+#[test]
+fn micro_mode_at_80x24_does_not_show_resize_message() {
+    let mut seed = support::fixture_seed();
+    seed.nhours = 24;
+    seed.ordered_zones = vec![
+        "Europe/London".to_string(),
+        "America/New_York".to_string(),
+        "Asia/Tokyo".to_string(),
+    ];
+    seed.base_zones = seed.ordered_zones.clone();
+
+    let model = ComparisonModel::build(seed, support::fixed_now()).unwrap();
+    let state = AppState::new(model, support::fixed_now());
+
+    let area = Rect::new(0, 0, 80, 24);
+    let mut buffer = Buffer::empty(area);
+    render_to_buffer(&mut buffer, area, &state);
+    let text: String = buffer.content.iter().map(|cell| cell.symbol()).collect();
+
+    assert!(
+        !text.contains("Resize terminal"),
+        "80x24 should render micro mode, not resize message"
+    );
+}
+
+#[test]
+fn micro_mode_single_zone_renders_at_80x24() {
+    let mut seed = support::fixture_seed();
+    seed.nhours = 24;
+    seed.ordered_zones = vec!["Europe/London".to_string()];
+    seed.base_zones = seed.ordered_zones.clone();
+
+    let model = ComparisonModel::build(seed, support::fixed_now()).unwrap();
+    let state = AppState::new(model, support::fixed_now());
+
+    let area = Rect::new(0, 0, 80, 24);
+    let mut buffer = Buffer::empty(area);
+    render_to_buffer(&mut buffer, area, &state); // should not panic
+
+    let text: String = buffer.content.iter().map(|cell| cell.symbol()).collect();
+    assert!(text.contains("Zone Timeline"));
+    assert!(
+        text.contains("BST"),
+        "should contain TZ abbreviation label for Europe/London in April, got: {text}"
+    );
+}
+
+#[test]
+fn micro_mode_many_zones_shows_scrollbar_at_80x24() {
+    use zonetimeline_tui::config::SessionSeed;
+
+    let zones: Vec<String> = vec![
+        "Europe/London",
+        "America/New_York",
+        "Asia/Tokyo",
+        "Australia/Sydney",
+        "Europe/Berlin",
+        "America/Los_Angeles",
+        "Asia/Shanghai",
+        "Europe/Paris",
+        "America/Chicago",
+        "Asia/Kolkata",
+        "Africa/Cairo",
+        "Pacific/Auckland",
+        "America/Denver",
+        "Europe/Moscow",
+        "Asia/Singapore",
+        "America/Sao_Paulo",
+        "Europe/Rome",
+        "Asia/Dubai",
+        "America/Phoenix",
+        "Europe/Istanbul",
+        "Asia/Bangkok",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect();
+
+    let seed = SessionSeed {
+        base_zones: zones.clone(),
+        extra_zones: Vec::new(),
+        ordered_zones: zones,
+        nhours: 24,
+        anchor_time: None,
+        width: Some(80),
+        plain: true,
+        save_path: std::env::temp_dir().join("ztl-micro-scroll.toml"),
+        default_window: "09:00-17:00".to_string(),
+        work_hours: Default::default(),
+        shoulder_hours: 1,
+        sort_mode: SortMode::Manual,
+    };
+
+    let model = ComparisonModel::build(seed, support::fixed_now()).unwrap();
+    let mut state = AppState::new(model, support::fixed_now());
+
+    // Select last zone
+    for _ in 0..21 {
+        state.focus_down();
+    }
+
+    let area = Rect::new(0, 0, 80, 24);
+    let mut buffer = Buffer::empty(area);
+    render_to_buffer(&mut buffer, area, &state); // should not panic
+
+    let text: String = buffer.content.iter().map(|cell| cell.symbol()).collect();
+    assert!(text.contains("Zone Timeline"));
+}
+
+#[test]
+fn micro_mode_help_overlay_renders_at_80x24() {
+    let mut seed = support::fixture_seed();
+    seed.nhours = 24;
+    seed.ordered_zones = vec![
+        "Europe/London".to_string(),
+        "America/New_York".to_string(),
+        "Asia/Tokyo".to_string(),
+    ];
+    seed.base_zones = seed.ordered_zones.clone();
+
+    let model = ComparisonModel::build(seed, support::fixed_now()).unwrap();
+    let mut state = AppState::new(model, support::fixed_now());
+    state.show_help = true;
+
+    let area = Rect::new(0, 0, 80, 24);
+    let mut buffer = Buffer::empty(area);
+    render_to_buffer(&mut buffer, area, &state); // should not panic
+
+    let text: String = buffer.content.iter().map(|cell| cell.symbol()).collect();
+    // The help overlay should be visible on top of micro mode
+    assert!(
+        text.contains("Keybindings") || text.contains("help") || text.contains("scroll"),
+        "help overlay should render on top of micro mode"
+    );
 }

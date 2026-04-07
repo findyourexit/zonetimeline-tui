@@ -19,6 +19,65 @@ use crate::tui::state::AppState;
 
 const UTC_DISPLAY_LABEL: &str = "Coordinated Universal Time (UTC)";
 
+/// Abbreviate a timezone for Micro Mode display.
+///
+/// For named IANA zones, returns the standard TZ abbreviation (e.g. `EST`,
+/// `BST`, `AEST`) resolved at the given UTC instant (DST-aware). For fixed
+/// offsets, returns a compact signed string like `+5:30` or `-4`. The result
+/// is truncated to `max_width` characters.
+pub fn micro_zone_label(
+    zone: &crate::core::timezones::ZoneHandle,
+    anchor: chrono::DateTime<chrono::Utc>,
+    max_width: usize,
+) -> String {
+    let raw = match zone {
+        crate::core::timezones::ZoneHandle::Named(tz) => {
+            use chrono::Offset;
+            use chrono_tz::OffsetName;
+            let dt = anchor.with_timezone(tz);
+            match dt.offset().abbreviation() {
+                Some(abbr) => abbr.to_string(),
+                // Many IANA zones (e.g. America/Bogota, America/Lima) use numeric
+                // offset strings in the tz database, so chrono-tz returns None.
+                // Fall back to a compact signed offset like "-5" or "+5:30".
+                None => {
+                    let secs = dt.offset().fix().local_minus_utc();
+                    if secs == 0 {
+                        "+0".to_string()
+                    } else {
+                        let sign = if secs < 0 { '-' } else { '+' };
+                        let abs = secs.unsigned_abs();
+                        let h = abs / 3600;
+                        let m = (abs % 3600) / 60;
+                        if m == 0 {
+                            format!("{sign}{h}")
+                        } else {
+                            format!("{sign}{h}:{m:02}")
+                        }
+                    }
+                }
+            }
+        }
+        crate::core::timezones::ZoneHandle::Fixed(offset) => {
+            let secs = offset.local_minus_utc();
+            if secs == 0 {
+                "+0".to_string()
+            } else {
+                let sign = if secs < 0 { '-' } else { '+' };
+                let abs = secs.unsigned_abs();
+                let h = abs / 3600;
+                let m = (abs % 3600) / 60;
+                if m == 0 {
+                    format!("{sign}{h}")
+                } else {
+                    format!("{sign}{h}:{m:02}")
+                }
+            }
+        }
+    };
+    raw.chars().take(max_width).collect()
+}
+
 /// Compute the minimum terminal (width, height) required to render the TUI
 /// in compact mode for the current state (slot count, label widths, etc.).
 ///
@@ -76,33 +135,52 @@ pub fn min_terminal_size(state: &AppState) -> (u16, u16) {
 
 /// Render the entire UI into `buffer`.
 ///
-/// If the terminal is smaller than the minimum required size, shows a resize
-/// prompt instead. Otherwise paints header, timeline grid, footer panels,
-/// controls bar, then any open modal or help overlay.
+/// Uses a three-tier rendering strategy:
+/// 1. **Resize guard** – below 80×24 the terminal is too small for any mode;
+///    show a "Resize terminal" message.
+/// 2. **Micro Mode** – at or above 80×24 but below the normal minimum; render
+///    only the timeline grid (no offset column) with a minimal controls hint.
+/// 3. **Normal mode** – full header, timeline, footer panels and controls bar.
+///
+/// Modals and the help overlay are painted on top in every mode.
 pub fn render_to_buffer(buffer: &mut Buffer, area: Rect, state: &AppState) {
-    let (min_w, min_h) = min_terminal_size(state);
-    if area.width < min_w || area.height < min_h {
-        Paragraph::new(format!("Resize terminal to at least {min_w}x{min_h}"))
+    // Absolute floor: 80x24 for Micro Mode
+    if area.width < 80 || area.height < 24 {
+        Paragraph::new("Resize terminal to at least 80x24")
             .block(Block::bordered().title("Zone Timeline"))
             .render(area, buffer);
         return;
     }
 
-    let header_height = compute_header_height(state, area.width);
-    let controls_height = compute_controls_height(state, area.width);
+    let (normal_min_w, normal_min_h) = min_terminal_size(state);
+    let micro = area.width < normal_min_w || area.height < normal_min_h;
 
-    let [header_area, timeline_area, footer_area, controls_area] = Layout::vertical([
-        Constraint::Length(header_height),   // Header: dynamic (3-5 rows)
-        Constraint::Min(10),                 // Timeline: remaining space
-        Constraint::Length(10),              // Footer panels: fixed
-        Constraint::Length(controls_height), // Controls bar: dynamic (1-2 rows)
-    ])
-    .areas(area);
+    if micro {
+        // Micro Mode: timeline + minimal controls only
+        let [timeline_area, controls_area] =
+            Layout::vertical([Constraint::Min(6), Constraint::Length(1)]).areas(area);
 
-    render_header(buffer, header_area, state);
-    render_timeline(buffer, timeline_area, state);
-    render_footer(buffer, footer_area, state);
-    render_controls(buffer, controls_area, state);
+        render_timeline_micro(buffer, timeline_area, state);
+        render_controls_micro(buffer, controls_area);
+    } else {
+        // Normal mode
+        let header_height = compute_header_height(state, area.width);
+        let controls_height = compute_controls_height(state, area.width);
+
+        let [header_area, timeline_area, footer_area, controls_area] = Layout::vertical([
+            Constraint::Length(header_height),
+            Constraint::Min(10),
+            Constraint::Length(10),
+            Constraint::Length(controls_height),
+        ])
+        .areas(area);
+
+        render_header(buffer, header_area, state);
+        render_timeline(buffer, timeline_area, state);
+        render_footer(buffer, footer_area, state);
+        render_controls(buffer, controls_area, state);
+    }
+
     render_modal(buffer, area, state);
 
     if state.show_help {
@@ -551,6 +629,198 @@ fn render_timeline(buffer: &mut Buffer, area: Rect, state: &AppState) {
     }
 }
 
+/// Render the Zone Timeline panel in Micro Mode.
+///
+/// Compared to the normal `render_timeline`:
+/// - Zone column uses abbreviated labels (city name only, max 6 chars)
+/// - Offset column is hidden
+/// - Time slots are always 2-char compact (`HH`)
+/// - NOW/selected frames start at the header row (top border on header, data rows inside)
+/// - No "NOW" text label (too narrow)
+pub fn render_timeline_micro(buffer: &mut Buffer, area: Rect, state: &AppState) {
+    let block = Block::bordered().title("Zone Timeline");
+    let inner = block.inner(area);
+    block.render(area, buffer);
+
+    if inner.height < 4 || inner.width < 20 {
+        return;
+    }
+
+    let slot_count = state.model.timeline_slots.len();
+    let slot_width: u16 = 2; // always compact HH
+
+    // Zone column: fit within remaining space after slots
+    let slots_space = (slot_count as u16) * (slot_width + 1); // each slot is HH + 1 gap
+    let zone_width = inner.width.saturating_sub(slots_space).clamp(3, 6);
+
+    let header_row = 0u16;
+    let first_zone_row = 1u16;
+    let user_zone_count = state.display_order.len();
+    let available_user_rows = inner.height.saturating_sub(3) as usize; // header + utc_row + frame_bottom
+    let visible_user_count = user_zone_count.min(available_user_rows);
+    let needs_scroll = user_zone_count > available_user_rows;
+
+    let timeline_scroll_offset = if needs_scroll && state.selected_zone > 0 {
+        let display_idx = state.selected_zone - 1;
+        if display_idx >= available_user_rows {
+            display_idx - available_user_rows + 1
+        } else {
+            0
+        }
+    } else {
+        0
+    };
+
+    let frame_bottom_row = first_zone_row + 1 + visible_user_count as u16;
+
+    // Slot X positions: zone_width + slot_index * (slot_width + 1)
+    let slot_x_positions: Vec<u16> = (0..slot_count)
+        .map(|i| zone_width + (i as u16) * (slot_width + 1))
+        .collect();
+
+    let now_col: Option<usize> = state
+        .model
+        .timeline_slots
+        .iter()
+        .position(|slot| slot.current_minute_offset.is_some());
+    let selected_col: usize = state.focused_hour;
+
+    let shoulder_minutes = state.session.shoulder_hours * 60;
+
+    let write_text = |buf: &mut Buffer, x: u16, y: u16, text: &str, style: Style| {
+        for (col, ch) in (x..).zip(text.chars()) {
+            if col >= inner.width {
+                break;
+            }
+            if let Some(cell) = buf.cell_mut((inner.x + col, inner.y + y)) {
+                cell.set_char(ch);
+                cell.set_style(style);
+            }
+        }
+    };
+
+    // Header row — "Zone" label only (no Offset header)
+    let col_header: String = "Zone".chars().take(zone_width as usize).collect();
+    write_text(buffer, 0, header_row, &col_header, Style::new().bold());
+
+    // Render fixed UTC row
+    {
+        let row_y = first_zone_row;
+        let utc_selected = state.selected_zone == 0;
+        let dim_style = if utc_selected {
+            Style::new().cyan().bold().dim()
+        } else {
+            Style::new().dim()
+        };
+
+        let utc_label: String = "UTC".chars().take(zone_width as usize).collect();
+        write_text(buffer, 0, row_y, &utc_label, dim_style);
+
+        let utc_handle =
+            crate::core::timezones::ZoneHandle::Fixed(chrono::FixedOffset::east_opt(0).unwrap());
+
+        for (slot_idx, slot) in state.model.timeline_slots.iter().enumerate() {
+            let local = utc_handle.local_time(slot.start_utc);
+            let text = local.format("%H").to_string();
+            let is_overlap = overlaps_slot(state, slot_idx);
+            let mut style = Style::new().dim();
+            if is_overlap {
+                style = style.underlined();
+            }
+            if utc_selected {
+                style = style.bold();
+            }
+            write_text(buffer, slot_x_positions[slot_idx], row_y, &text, style);
+        }
+    }
+
+    // Render user zone data rows
+    for (visible_idx, display_idx) in
+        (timeline_scroll_offset..timeline_scroll_offset + visible_user_count).enumerate()
+    {
+        let &model_idx = &state.display_order[display_idx];
+        let zone = &state.model.zones[model_idx];
+        let row_y = first_zone_row + 1 + visible_idx as u16;
+        let zone_selected = state.selected_zone == display_idx + 1;
+
+        let label_style = if zone_selected {
+            Style::new().cyan().bold()
+        } else {
+            Style::new()
+        };
+
+        let label = micro_zone_label(&zone.handle, state.model.anchor, zone_width as usize);
+        write_text(buffer, 0, row_y, &label, label_style);
+
+        for (slot_idx, slot) in state.model.timeline_slots.iter().enumerate() {
+            let local = zone.handle.local_time(slot.start_utc);
+            let minute_of_day = zone.handle.minute_of_day(slot.start_utc);
+            let in_window = zone.window.contains(minute_of_day);
+            let in_shoulder = zone
+                .window
+                .shoulder_contains(minute_of_day, shoulder_minutes);
+            let is_overlap = overlaps_slot(state, slot_idx);
+
+            let style = cell_style(&CellStyleInput {
+                in_window,
+                in_shoulder,
+                is_overlap,
+                zone_selected,
+                is_header: false,
+            });
+
+            let text = local.format("%H").to_string();
+            write_text(buffer, slot_x_positions[slot_idx], row_y, &text, style);
+        }
+    }
+
+    // Draw box-drawing frames — top border on header_row, data rows below
+    let frames: Vec<(usize, Style, u16)> = {
+        let selected_style = Style::new().white();
+        let now_style = Style::new().dark_gray();
+        let mut frames = Vec::new();
+        if let Some(nc) = now_col {
+            if nc == selected_col {
+                frames.push((nc, selected_style, header_row));
+            } else {
+                frames.push((nc, now_style, header_row));
+                frames.push((selected_col, selected_style, header_row));
+            }
+        } else {
+            frames.push((selected_col, selected_style, header_row));
+        }
+        frames
+    };
+
+    for (col_idx, frame_style, top_row) in &frames {
+        if *col_idx >= slot_x_positions.len() {
+            continue;
+        }
+        draw_column_frame(
+            buffer,
+            inner,
+            slot_x_positions[*col_idx],
+            slot_width,
+            *top_row,
+            frame_bottom_row,
+            *frame_style,
+        );
+    }
+
+    // No "NOW" text label — too narrow in micro mode
+
+    // Scrollbar
+    if needs_scroll {
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(None)
+            .end_symbol(None);
+        let mut scrollbar_state = ScrollbarState::new(user_zone_count)
+            .position(state.selected_zone.saturating_sub(1))
+            .viewport_content_length(available_user_rows);
+        StatefulWidget::render(scrollbar, inner, buffer, &mut scrollbar_state);
+    }
+}
+
 /// Draw a box-drawing frame around a single timeline column.
 fn draw_column_frame(
     buffer: &mut Buffer,
@@ -849,6 +1119,24 @@ fn render_controls(buffer: &mut Buffer, area: Rect, state: &AppState) {
         // Single line mode
         Paragraph::new(Line::from(spans)).render(area, buffer);
     }
+}
+
+/// Render the minimal controls bar for Micro Mode.
+///
+/// Shows only `? help  q quit` on a single line.
+pub fn render_controls_micro(buffer: &mut Buffer, area: Rect) {
+    let key_style = Style::new().cyan().dim();
+    let desc_style = Style::new().dark_gray();
+
+    let spans = vec![
+        Span::styled(" ?", key_style),
+        Span::styled(" help", desc_style),
+        Span::styled("  ", desc_style),
+        Span::styled("q", key_style),
+        Span::styled(" quit", desc_style),
+    ];
+
+    Paragraph::new(Line::from(spans)).render(area, buffer);
 }
 
 fn selected_zone_label(state: &AppState) -> String {
