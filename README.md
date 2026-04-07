@@ -98,6 +98,23 @@ ztl list
   <img src="assets/demo-compact-mode.gif" alt="Zone Timeline TUI compact mode demo" width="800" />
 </p>
 
+Compact Mode kicks in automatically when the terminal width drops below the
+full layout threshold. It condenses the timeline while preserving all zone
+rows, work-window shading, and keyboard navigation — ideal for split panes,
+tiling window managers, or narrower displays.
+
+### Micro Mode
+
+<p align="center">
+  <img src="assets/demo-micro-mode.gif" alt="Zone Timeline TUI micro mode demo" width="800" />
+</p>
+
+Micro Mode activates automatically when the terminal size is very small,
+providing a streamlined layout optimised for mobile handsets and other
+constrained terminal environments. It retains core functionality — zone
+comparison, hour navigation, and work-window visibility — while fitting
+comfortably in minimal screen real estate.
+
 ## TUI Controls
 
 | Key                                                             | Action                      |
