@@ -22,6 +22,9 @@ use crate::core::model::{
 use crate::core::timezones::parse_zone;
 use crate::tui::forms::{Modal, Pane, TIME_SLOTS, build_picker_entries, refilter};
 
+/// Cursor movement granularity in minutes (half-hour steps).
+pub const STEP_MINUTES: i64 = 30;
+
 /// Central application state for the TUI session.
 ///
 /// Holds the comparison model, cursor positions (hour and zone), the current
@@ -32,7 +35,7 @@ pub struct AppState {
     pub session: SessionConfig,
     pub model: ComparisonModel,
     pub now_utc: DateTime<Utc>,
-    pub focused_hour: usize,
+    pub cursor_minutes: i64,
     pub selected_zone: usize,
     pub show_help: bool,
     pub status: Option<String>,
@@ -46,14 +49,15 @@ pub struct AppState {
 impl AppState {
     /// Create a new `AppState` from a freshly-built model.
     ///
-    /// Initializes `focused_hour` to the column whose offset is 0 (the anchor
-    /// slot), and sets the zone cursor to the first row (UTC).
+    /// Initializes the cursor to the anchor column (offset 0), expressed in
+    /// minutes, and sets the zone cursor to the first row (UTC).
     pub fn new(model: ComparisonModel, now_utc: DateTime<Utc>) -> Self {
-        let focused_hour = model
+        let anchor_slot = model
             .timeline_slots
             .iter()
             .position(|slot| slot.offset_hours == 0)
             .unwrap_or(0);
+        let cursor_minutes = (anchor_slot as i64) * 60;
 
         let sort_mode = model.session().sort_mode;
         let display_order = compute_display_order(&model.zones, sort_mode, now_utc);
@@ -62,7 +66,7 @@ impl AppState {
             session: model.session().clone(),
             model,
             now_utc,
-            focused_hour,
+            cursor_minutes,
             selected_zone: 0,
             show_help: false,
             status: None,
@@ -94,15 +98,40 @@ impl AppState {
         Ok(())
     }
 
-    /// Move the hour cursor one slot to the left (clamped at 0).
-    pub fn focus_left(&mut self) {
-        self.focused_hour = self.focused_hour.saturating_sub(1);
+    /// Maximum cursor minute offset (start of the last step-wide column).
+    fn cursor_max_minutes(&self) -> i64 {
+        let total = self.model.timeline_slots.len() as i64 * 60;
+        (total - STEP_MINUTES).max(0)
     }
 
-    /// Move the hour cursor one slot to the right (clamped at the last slot).
+    /// Move the cursor one step (`STEP_MINUTES`) to the left (clamped at 0).
+    pub fn focus_left(&mut self) {
+        self.cursor_minutes = (self.cursor_minutes - STEP_MINUTES).max(0);
+    }
+
+    /// Move the cursor one step (`STEP_MINUTES`) to the right (clamped at the last column).
     pub fn focus_right(&mut self) {
-        let last = self.model.timeline_slots.len().saturating_sub(1);
-        self.focused_hour = self.focused_hour.min(last).saturating_add(1).min(last);
+        self.cursor_minutes = (self.cursor_minutes + STEP_MINUTES).min(self.cursor_max_minutes());
+    }
+
+    /// Jump the cursor to the column containing "now" (snapped to `STEP_MINUTES`).
+    /// With a fixed `--time` anchor there is no live "now", so this is a no-op
+    /// that surfaces a brief status message instead.
+    pub fn jump_to_now(&mut self) {
+        if let Some((idx, slot)) = self
+            .model
+            .timeline_slots
+            .iter()
+            .enumerate()
+            .find(|(_, s)| s.current_minute_offset.is_some())
+        {
+            let within = i64::from(slot.current_minute_offset.unwrap_or(0));
+            let snapped = (within / STEP_MINUTES) * STEP_MINUTES;
+            self.cursor_minutes = ((idx as i64) * 60 + snapped).min(self.cursor_max_minutes());
+            self.status = None;
+        } else {
+            self.status = Some("No live 'now' with a fixed --time".to_string());
+        }
     }
 
     /// Unified index space: 0 = UTC row, 1..=N = user zones via display_order
@@ -588,9 +617,7 @@ impl AppState {
         let model = ComparisonModel::rebuild(session, self.now_utc)?;
         self.session = model.session().clone();
         self.model = model;
-        self.focused_hour = self
-            .focused_hour
-            .min(self.model.timeline_slots.len().saturating_sub(1));
+        self.cursor_minutes = self.cursor_minutes.min(self.cursor_max_minutes());
         self.recompute_display_order();
         // Clamp selected_zone to valid unified range
         let max_unified = self.display_order.len();

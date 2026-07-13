@@ -95,6 +95,7 @@ pub fn run(model: ComparisonModel) -> Result<()> {
             KeyCode::Right | KeyCode::Char('l') => state.focus_right(),
             KeyCode::Up | KeyCode::Char('k') => state.focus_up(),
             KeyCode::Down | KeyCode::Char('j') => state.focus_down(),
+            KeyCode::Char('n') => state.jump_to_now(),
             KeyCode::Char('?') => state.show_help = true,
             _ => {}
         }

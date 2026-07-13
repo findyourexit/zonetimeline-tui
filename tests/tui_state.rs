@@ -3,7 +3,7 @@ mod support;
 use chrono::{Duration as ChronoDuration, Timelike};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier};
+use ratatui::style::Modifier;
 use tempfile::tempdir;
 use zonetimeline_tui::core::model::{AnchorSpec, ComparisonModel, SessionConfig, SortMode};
 use zonetimeline_tui::tui::state::AppState;
@@ -24,10 +24,14 @@ fn timeline_view_renders_grid_overlap_panels_and_cursor_details() {
         .collect::<String>();
 
     assert!(text.contains("Zone Timeline"));
-    assert!(text.contains("Working Windows"));
-    assert!(text.contains("Zones"));
-    assert!(text.contains("Details"));
-    // Now row removed — verify box-drawing frame instead
+    assert!(
+        text.contains("Best Windows"),
+        "should render Best Windows panel"
+    );
+    assert!(
+        text.contains("Cursor Position"),
+        "should render the cursor inspector panel"
+    );
     assert!(text.contains("┌"), "should render box-drawing frame");
 }
 
@@ -95,8 +99,8 @@ fn normal_mode_renders_at_exact_normal_minimum() {
     assert!(!text.contains("Resize terminal"));
     assert!(text.contains("Zone Timeline"));
     assert!(
-        text.contains("Current Times"),
-        "should render header in normal mode"
+        text.contains("Core"),
+        "should render the legend header in normal mode"
     );
 }
 
@@ -129,74 +133,6 @@ fn resize_guard_triggers_at_23_height() {
     assert!(
         text.contains("Resize terminal"),
         "resize guard should trigger at height 23"
-    );
-}
-
-#[test]
-fn timeline_view_compacts_24_hour_grid_on_narrow_terminal() {
-    let mut seed = support::fixture_seed();
-    seed.ordered_zones = vec!["UTC".to_string()];
-    seed.nhours = 24;
-    seed.width = Some(120);
-
-    let model = ComparisonModel::build(seed, support::fixed_now()).unwrap();
-    let state = AppState::new(model, support::fixed_now());
-    let area = Rect::new(0, 0, 120, 36);
-    let mut buffer = Buffer::empty(area);
-
-    render_to_buffer(&mut buffer, area, &state);
-
-    // UTC data row is one row below the header row (row 6: header=3 + border=1 + header_row=1 + first_zone=1)
-    let utc_data_row = (0..area.width)
-        .map(|x| buffer.cell((x, 6)).unwrap().symbol())
-        .collect::<String>();
-
-    assert!(
-        utc_data_row.contains("23"),
-        "UTC data row was: {utc_data_row:?}"
-    );
-    assert!(
-        utc_data_row.contains("+00:00"),
-        "UTC data row should contain offset: {utc_data_row:?}"
-    );
-}
-
-#[test]
-fn timeline_view_compacts_default_grid_at_minimum_width() {
-    let mut seed = support::fixture_seed();
-    seed.nhours = 24;
-    seed.ordered_zones = vec![
-        "Europe/London".to_string(),
-        "America/New_York".to_string(),
-        "Asia/Tokyo".to_string(),
-    ];
-    seed.base_zones = seed.ordered_zones.clone();
-
-    let model = ComparisonModel::build(seed, support::fixed_now()).unwrap();
-    let state = AppState::new(model, support::fixed_now());
-
-    let (min_w, min_h) = zonetimeline_tui::tui::view::min_terminal_size(&state);
-    // Use at least 80x24 (the absolute floor) so the resize guard doesn't trigger
-    let w = min_w.max(80);
-    let h = min_h.max(24);
-    let area = Rect::new(0, 0, w, h);
-    let mut buffer = Buffer::empty(area);
-
-    render_to_buffer(&mut buffer, area, &state);
-
-    let utc_data_row = (0..area.height)
-        .map(|y| {
-            (0..area.width)
-                .map(|x| buffer.cell((x, y)).unwrap().symbol())
-                .collect::<String>()
-        })
-        .find(|row| row.contains("+00:00"))
-        .expect("should find a row containing +00:00");
-
-    let colon_count = utc_data_row.matches(':').count();
-    assert!(
-        colon_count <= 2,
-        "Expected at most 2 colons (from offset), got {colon_count} — UTC data row was: {utc_data_row:?}"
     );
 }
 
@@ -771,64 +707,7 @@ fn picker_renders_without_panic_at_various_sizes() {
 }
 
 #[test]
-fn timeline_cells_use_green_foreground_for_in_window_slots() {
-    let model = ComparisonModel::build(support::fixture_seed(), support::fixed_now()).unwrap();
-    let state = AppState::new(model, support::fixed_now());
-    let area = Rect::new(0, 0, 120, 36);
-    let mut buffer = Buffer::empty(area);
-
-    render_to_buffer(&mut buffer, area, &state);
-
-    let has_green = (0..area.width).any(|x| {
-        (0..area.height).any(|y| {
-            let cell = buffer.cell((x, y)).unwrap();
-            cell.fg == Color::Green && !cell.symbol().trim().is_empty()
-        })
-    });
-    assert!(has_green, "should have green cells for in-window slots");
-}
-
-#[test]
-fn timeline_cells_use_red_foreground_for_outside_window_slots() {
-    let model = ComparisonModel::build(support::fixture_seed(), support::fixed_now()).unwrap();
-    let state = AppState::new(model, support::fixed_now());
-    let area = Rect::new(0, 0, 120, 36);
-    let mut buffer = Buffer::empty(area);
-
-    render_to_buffer(&mut buffer, area, &state);
-
-    let has_red = (0..area.width).any(|x| {
-        (0..area.height).any(|y| {
-            let cell = buffer.cell((x, y)).unwrap();
-            cell.fg == Color::Red && !cell.symbol().trim().is_empty()
-        })
-    });
-    assert!(has_red, "should have red cells for outside-window slots");
-}
-
-#[test]
-fn timeline_overlap_columns_have_underline_modifier() {
-    let model = ComparisonModel::build(support::fixture_seed(), support::fixed_now()).unwrap();
-    let state = AppState::new(model, support::fixed_now());
-    let area = Rect::new(0, 0, 120, 36);
-    let mut buffer = Buffer::empty(area);
-
-    render_to_buffer(&mut buffer, area, &state);
-
-    let has_underline = (0..area.width).any(|x| {
-        (0..area.height).any(|y| {
-            let cell = buffer.cell((x, y)).unwrap();
-            cell.modifier.contains(Modifier::UNDERLINED) && !cell.symbol().trim().is_empty()
-        })
-    });
-    assert!(
-        has_underline,
-        "should have underlined cells in overlap columns"
-    );
-}
-
-#[test]
-fn timeline_has_no_now_caret_row() {
+fn timeline_now_marker_is_a_caret_not_a_text_row() {
     let model = ComparisonModel::build(support::fixture_seed(), support::fixed_now()).unwrap();
     let state = AppState::new(model, support::fixed_now());
     let area = Rect::new(0, 0, 120, 36);
@@ -838,13 +717,17 @@ fn timeline_has_no_now_caret_row() {
     let text: String = buffer.content.iter().map(|cell| cell.symbol()).collect();
 
     assert!(
-        !text.contains("Now"),
-        "Now row should be removed from timeline"
+        text.contains('▼'),
+        "now should render as a ▼ caret on the timeline axis"
+    );
+    assert!(
+        !text.contains("NOW"),
+        "there should be no textual NOW row in the timeline"
     );
 }
 
 #[test]
-fn timeline_draws_box_frame_around_selected_column() {
+fn timeline_marks_cursor_column() {
     let model = ComparisonModel::build(support::fixture_seed(), support::fixed_now()).unwrap();
     let state = AppState::new(model, support::fixed_now());
     let area = Rect::new(0, 0, 120, 36);
@@ -853,12 +736,13 @@ fn timeline_draws_box_frame_around_selected_column() {
     render_to_buffer(&mut buffer, area, &state);
     let text: String = buffer.content.iter().map(|cell| cell.symbol()).collect();
 
-    assert!(text.contains('┌'), "should have top-left corner");
-    assert!(text.contains('┐'), "should have top-right corner");
-    assert!(text.contains('└'), "should have bottom-left corner");
-    assert!(text.contains('┘'), "should have bottom-right corner");
+    // The cursor column is marked with a diamond caret on the axis row.
+    assert!(
+        text.contains('◆'),
+        "should mark the cursor column with a caret"
+    );
+    // The panel border is still drawn.
     assert!(text.contains('│'), "should have vertical edges");
-    assert!(text.contains('─'), "should have horizontal edges");
 }
 
 #[test]
@@ -1071,13 +955,13 @@ fn sort_indicator_shows_current_sort_mode() {
     let text: String = buffer.content.iter().map(|cell| cell.symbol()).collect();
 
     assert!(
-        text.contains("Sort: UTC+"),
-        "should show sort indicator for default mode"
+        text.contains("sort:UTC+"),
+        "should show the current sort mode in the controls bar"
     );
 }
 
 #[test]
-fn fixed_utc_row_is_rendered_with_dim_style() {
+fn utc_axis_label_is_rendered_with_dim_style() {
     let model = ComparisonModel::build(support::fixture_seed(), support::fixed_now()).unwrap();
     let state = AppState::new(model, support::fixed_now());
     let area = Rect::new(0, 0, 120, 36);
@@ -1085,14 +969,14 @@ fn fixed_utc_row_is_rendered_with_dim_style() {
 
     render_to_buffer(&mut buffer, area, &state);
 
-    // Find a cell in the UTC row that has DIM modifier
+    // The merged UTC axis row's gutter label ("U…") should be dimmed.
     let has_dim = (0..area.width).any(|x| {
         (0..area.height).any(|y| {
             let cell = buffer.cell((x, y)).unwrap();
             cell.modifier.contains(Modifier::DIM) && cell.symbol() == "U"
         })
     });
-    assert!(has_dim, "UTC row should have DIM modifier");
+    assert!(has_dim, "UTC label should have DIM modifier");
 }
 
 #[test]
@@ -1158,8 +1042,8 @@ fn working_windows_panel_shows_tier_labels() {
     let text: String = buffer.content.iter().map(|cell| cell.symbol()).collect();
 
     assert!(
-        text.contains("Working Windows"),
-        "panel title should be Working Windows"
+        text.contains("Best Windows"),
+        "panel title should be Best Windows"
     );
     // With default 09:00-17:00 windows, 1hr shoulder, London+NYC, there should be overlap
     assert!(
@@ -1240,8 +1124,8 @@ fn dynamic_layout_header_is_three_rows_with_two_zones() {
         .map(|x| buffer.cell((x, 0)).unwrap().symbol())
         .collect::<String>();
     assert!(
-        row0.contains("Current Times"),
-        "Row 0 should be header border with title"
+        row0.contains("UTC"),
+        "Row 0 should be the header border with the clock title"
     );
 
     // Row 1: content line (zone summaries)
@@ -1249,8 +1133,8 @@ fn dynamic_layout_header_is_three_rows_with_two_zones() {
         .map(|x| buffer.cell((x, 1)).unwrap().symbol())
         .collect::<String>();
     assert!(
-        row1.contains("London") || row1.contains("13:30"),
-        "Row 1 should contain zone summary"
+        row1.contains("Core"),
+        "Row 1 should contain the availability legend"
     );
 
     // Row 2: bottom border of header
@@ -1296,8 +1180,9 @@ fn header_suppresses_empty_status_line() {
 }
 
 #[test]
-fn compute_header_height_clamps_to_max_five() {
-    // Even with many zones that would wrap to 10+ lines, height is clamped at 3+2=5
+fn compute_header_height_is_fixed_regardless_of_zone_count() {
+    // The header now shows a fixed legend line (not per-zone times), so its
+    // height is constant at 1 content line + 2 borders no matter how many zones.
     use zonetimeline_tui::config::SessionSeed;
     let seed = SessionSeed {
         base_zones: vec!["UTC".to_string()],
@@ -1318,7 +1203,7 @@ fn compute_header_height_clamps_to_max_five() {
     let model = ComparisonModel::build(seed, support::fixed_now()).unwrap();
     let state = AppState::new(model, support::fixed_now());
     let height = zonetimeline_tui::tui::view::compute_header_height(&state, 80);
-    assert_eq!(height, 5, "clamped to 3 content lines + 2 borders");
+    assert_eq!(height, 3, "1 legend line + 2 borders");
 }
 
 #[test]
@@ -1353,7 +1238,7 @@ fn controls_bar_wraps_to_two_lines_at_narrow_width() {
 
     // Both rows should contain some control text
     assert!(
-        row_second_last.contains("Anchor") || row_second_last.contains("scroll"),
+        row_second_last.contains("cursor") || row_second_last.contains("zones"),
         "Second-to-last row should have controls: {row_second_last:?}"
     );
     assert!(
@@ -1363,7 +1248,7 @@ fn controls_bar_wraps_to_two_lines_at_narrow_width() {
 }
 
 #[test]
-fn zones_panel_scrolls_to_follow_selected_zone() {
+fn inspector_scrolls_to_follow_selected_zone() {
     // Create a state with many zones, select the last one, verify it's visible
     use zonetimeline_tui::config::SessionSeed;
     let zones: Vec<String> = vec![
@@ -1416,39 +1301,39 @@ fn zones_panel_scrolls_to_follow_selected_zone() {
     // The footer is a 10-row section. With 13 zones and 8 inner rows, Auckland (zone 13)
     // is off-screen without scroll-follow.
     //
-    // We identify the zones panel by finding the row with the "Zones" panel title,
-    // then checking rows below it in the middle third of the terminal width.
-    let panel_width = area.width / 3;
-    let zones_col_start = panel_width; // middle third starts here approximately
-    let zones_col_end = zones_col_start + panel_width;
+    // The Cursor inspector occupies the right half of the footer. Find its title
+    // row, then confirm the selected zone scrolled into view below it.
+    let col_start = area.width / 2;
+    let col_end = area.width;
 
-    // Find the footer start row (the row with "Zones" title)
     let mut footer_start: u16 = 0;
     for y in 0..area.height {
-        let row: String = (zones_col_start..zones_col_end)
+        let row: String = (col_start..col_end)
             .map(|x| buffer.cell((x, y)).unwrap().symbol())
             .collect();
-        if row.contains("Zones") {
+        if row.contains("Cursor Position") {
             footer_start = y;
             break;
         }
     }
-    assert!(footer_start > 0, "Should find Zones panel title row");
+    assert!(
+        footer_start > 0,
+        "should find the cursor inspector title row"
+    );
 
-    // Now scan only the zones panel column area in the footer rows for "Auckland"
-    let mut found_auckland_in_zones_panel = false;
+    let mut found = false;
     for y in (footer_start + 1)..area.height.min(footer_start + 10) {
-        let row: String = (zones_col_start..zones_col_end)
+        let row: String = (col_start..col_end)
             .map(|x| buffer.cell((x, y)).unwrap().symbol())
             .collect();
         if row.contains("Auckland") {
-            found_auckland_in_zones_panel = true;
+            found = true;
             break;
         }
     }
     assert!(
-        found_auckland_in_zones_panel,
-        "Selected zone 'Auckland' should be visible in the Zones panel after scroll-follow"
+        found,
+        "selected zone 'Auckland' should be visible in the Cursor inspector after scroll-follow"
     );
 }
 
@@ -1899,224 +1784,6 @@ fn edit_window_cancel_does_not_change_model() {
 }
 
 #[test]
-fn micro_zone_label_returns_tz_abbreviation_for_named_zones() {
-    use chrono::TimeZone;
-    use zonetimeline_tui::core::timezones::ZoneHandle;
-    use zonetimeline_tui::tui::view::micro_zone_label;
-
-    let anchor = chrono::Utc.with_ymd_and_hms(2026, 4, 1, 12, 30, 0).unwrap();
-
-    let london = ZoneHandle::Named(chrono_tz::Europe::London);
-    assert_eq!(micro_zone_label(&london, anchor, 6), "BST");
-
-    let new_york = ZoneHandle::Named(chrono_tz::America::New_York);
-    assert_eq!(micro_zone_label(&new_york, anchor, 6), "EDT");
-
-    let tokyo = ZoneHandle::Named(chrono_tz::Asia::Tokyo);
-    assert_eq!(micro_zone_label(&tokyo, anchor, 6), "JST");
-
-    let kolkata = ZoneHandle::Named(chrono_tz::Asia::Kolkata);
-    assert_eq!(micro_zone_label(&kolkata, anchor, 6), "IST");
-}
-
-#[test]
-fn micro_zone_label_is_dst_aware() {
-    use chrono::TimeZone;
-    use zonetimeline_tui::core::timezones::ZoneHandle;
-    use zonetimeline_tui::tui::view::micro_zone_label;
-
-    let ny = ZoneHandle::Named(chrono_tz::America::New_York);
-
-    // Summer (April) -> EDT
-    let summer = chrono::Utc.with_ymd_and_hms(2026, 4, 1, 12, 0, 0).unwrap();
-    assert_eq!(micro_zone_label(&ny, summer, 6), "EDT");
-
-    // Winter (January) -> EST
-    let winter = chrono::Utc.with_ymd_and_hms(2026, 1, 15, 12, 0, 0).unwrap();
-    assert_eq!(micro_zone_label(&ny, winter, 6), "EST");
-}
-
-#[test]
-fn micro_zone_label_nested_region_uses_abbreviation_not_city() {
-    use chrono::TimeZone;
-    use zonetimeline_tui::core::timezones::ZoneHandle;
-    use zonetimeline_tui::tui::view::micro_zone_label;
-
-    let anchor = chrono::Utc.with_ymd_and_hms(2026, 4, 1, 12, 30, 0).unwrap();
-    let indy = ZoneHandle::Named(chrono_tz::America::Indiana::Indianapolis);
-    // Indianapolis is in Eastern time — gets EDT, not "Indian"
-    assert_eq!(micro_zone_label(&indy, anchor, 6), "EDT");
-}
-
-#[test]
-fn micro_zone_label_fixed_offset_shows_compact_offset() {
-    use zonetimeline_tui::core::timezones::ZoneHandle;
-    use zonetimeline_tui::tui::view::micro_zone_label;
-
-    let anchor = support::fixed_now();
-
-    let plus_530 = ZoneHandle::Fixed(chrono::FixedOffset::east_opt(19800).unwrap());
-    assert_eq!(micro_zone_label(&plus_530, anchor, 6), "+5:30");
-
-    let minus_4 = ZoneHandle::Fixed(chrono::FixedOffset::east_opt(-14400).unwrap());
-    assert_eq!(micro_zone_label(&minus_4, anchor, 6), "-4");
-
-    let zero = ZoneHandle::Fixed(chrono::FixedOffset::east_opt(0).unwrap());
-    assert_eq!(micro_zone_label(&zero, anchor, 6), "+0");
-}
-
-#[test]
-fn micro_zone_label_truncates_long_abbreviation() {
-    use chrono::TimeZone;
-    use zonetimeline_tui::core::timezones::ZoneHandle;
-    use zonetimeline_tui::tui::view::micro_zone_label;
-
-    // NZDT is 4 chars — fits in max_width=3 only as "NZD"
-    let anchor = chrono::Utc.with_ymd_and_hms(2026, 4, 1, 12, 30, 0).unwrap();
-    let auckland = ZoneHandle::Named(chrono_tz::Pacific::Auckland);
-    assert_eq!(micro_zone_label(&auckland, anchor, 3), "NZD");
-    // Full abbreviation fits at max_width=6
-    assert_eq!(micro_zone_label(&auckland, anchor, 6), "NZDT");
-}
-
-#[test]
-fn micro_zone_label_abbreviation_is_not_padded() {
-    use chrono::TimeZone;
-    use zonetimeline_tui::core::timezones::ZoneHandle;
-    use zonetimeline_tui::tui::view::micro_zone_label;
-
-    let anchor = chrono::Utc.with_ymd_and_hms(2026, 4, 1, 12, 30, 0).unwrap();
-    let tokyo = ZoneHandle::Named(chrono_tz::Asia::Tokyo);
-    // JST is 3 chars — should not be padded to max_width=10
-    assert_eq!(micro_zone_label(&tokyo, anchor, 10), "JST");
-}
-
-#[test]
-fn micro_zone_label_falls_back_to_compact_offset_when_no_abbreviation() {
-    use chrono::TimeZone;
-    use zonetimeline_tui::core::timezones::ZoneHandle;
-    use zonetimeline_tui::tui::view::micro_zone_label;
-
-    let anchor = chrono::Utc.with_ymd_and_hms(2026, 4, 1, 12, 30, 0).unwrap();
-
-    // America/Bogota is UTC-5 but chrono-tz returns None for abbreviation()
-    let bogota = ZoneHandle::Named(chrono_tz::America::Bogota);
-    assert_eq!(micro_zone_label(&bogota, anchor, 6), "-5");
-
-    // America/Lima is also UTC-5 with no named abbreviation
-    let lima = ZoneHandle::Named(chrono_tz::America::Lima);
-    assert_eq!(micro_zone_label(&lima, anchor, 6), "-5");
-
-    // America/Sao_Paulo is UTC-3 with no named abbreviation
-    let sao_paulo = ZoneHandle::Named(chrono_tz::America::Sao_Paulo);
-    assert_eq!(micro_zone_label(&sao_paulo, anchor, 6), "-3");
-}
-
-#[test]
-fn micro_controls_renders_minimal_hints() {
-    use ratatui::buffer::Buffer;
-    use ratatui::layout::Rect;
-    use zonetimeline_tui::tui::view::render_controls_micro;
-
-    let area = Rect::new(0, 0, 80, 1);
-    let mut buffer = Buffer::empty(area);
-    render_controls_micro(&mut buffer, area);
-
-    let text: String = buffer.content.iter().map(|cell| cell.symbol()).collect();
-    assert!(text.contains("?"), "should contain ? key hint");
-    assert!(text.contains("help"), "should contain help description");
-    assert!(text.contains("q"), "should contain q key hint");
-    assert!(text.contains("quit"), "should contain quit description");
-}
-
-#[test]
-fn micro_timeline_renders_zones_without_offset_column() {
-    use zonetimeline_tui::tui::view::render_timeline_micro;
-
-    let model = ComparisonModel::build(support::fixture_seed(), support::fixed_now()).unwrap();
-    let state = AppState::new(model, support::fixed_now());
-    let area = Rect::new(0, 0, 80, 22);
-    let mut buffer = Buffer::empty(area);
-
-    render_timeline_micro(&mut buffer, area, &state);
-
-    let text: String = buffer.content.iter().map(|cell| cell.symbol()).collect();
-
-    // Should have TZ abbreviation labels
-    assert!(
-        text.contains("BST") || text.contains("EDT"),
-        "should contain TZ abbreviation labels, got: {text}"
-    );
-    // Should NOT have offset column values
-    assert!(
-        !text.contains("+00:00"),
-        "should not contain offset column in micro mode"
-    );
-    assert!(
-        !text.contains("Offset"),
-        "should not contain Offset header in micro mode"
-    );
-    // Should have Zone Timeline title
-    assert!(text.contains("Zone Timeline"), "should have panel title");
-    // Should have box-drawing frame chars
-    assert!(text.contains("┌"), "should have column frame");
-}
-
-#[test]
-fn micro_mode_activates_below_normal_minimum_but_above_80x24() {
-    let mut seed = support::fixture_seed();
-    seed.nhours = 24;
-    seed.ordered_zones = vec![
-        "Europe/London".to_string(),
-        "America/New_York".to_string(),
-        "Asia/Tokyo".to_string(),
-    ];
-    seed.base_zones = seed.ordered_zones.clone();
-
-    let model = ComparisonModel::build(seed, support::fixed_now()).unwrap();
-    let state = AppState::new(model, support::fixed_now());
-
-    let (normal_min_w, normal_min_h) = zonetimeline_tui::tui::view::min_terminal_size(&state);
-    assert!(
-        normal_min_w > 80 || normal_min_h > 24,
-        "normal minimum ({normal_min_w}x{normal_min_h}) should exceed 80x24 for this fixture"
-    );
-
-    let area = Rect::new(0, 0, 80, 24);
-    let mut buffer = Buffer::empty(area);
-    render_to_buffer(&mut buffer, area, &state);
-
-    let text: String = buffer.content.iter().map(|cell| cell.symbol()).collect();
-
-    assert!(
-        text.contains("Zone Timeline"),
-        "should render timeline in micro mode"
-    );
-    assert!(
-        !text.contains("Current Times"),
-        "should NOT render header in micro mode"
-    );
-    assert!(
-        !text.contains("Working Windows"),
-        "should NOT render footer panels in micro mode"
-    );
-    assert!(
-        !text.contains("Details"),
-        "should NOT render details panel in micro mode"
-    );
-    assert!(
-        !text.contains("Offset"),
-        "should not have Offset header in micro mode"
-    );
-    assert!(text.contains("help"), "should have minimal help hint");
-    assert!(text.contains("quit"), "should have minimal quit hint");
-    assert!(
-        !text.contains("scroll"),
-        "should not have full controls in micro mode"
-    );
-}
-
-#[test]
 fn resize_guard_targets_80x24_as_absolute_floor() {
     let model = ComparisonModel::build(support::fixture_seed(), support::fixed_now()).unwrap();
     let state = AppState::new(model, support::fixed_now());
@@ -2141,7 +1808,7 @@ fn resize_guard_targets_80x24_as_absolute_floor() {
 }
 
 #[test]
-fn micro_mode_at_80x24_does_not_show_resize_message() {
+fn renders_at_80x24_not_resize_guard() {
     let mut seed = support::fixture_seed();
     seed.nhours = 24;
     seed.ordered_zones = vec![
@@ -2161,12 +1828,12 @@ fn micro_mode_at_80x24_does_not_show_resize_message() {
 
     assert!(
         !text.contains("Resize terminal"),
-        "80x24 should render micro mode, not resize message"
+        "80x24 should render the timeline, not the resize message"
     );
 }
 
 #[test]
-fn micro_mode_single_zone_renders_at_80x24() {
+fn single_zone_renders_at_80x24_floor() {
     let mut seed = support::fixture_seed();
     seed.nhours = 24;
     seed.ordered_zones = vec!["Europe/London".to_string()];
@@ -2179,16 +1846,17 @@ fn micro_mode_single_zone_renders_at_80x24() {
     let mut buffer = Buffer::empty(area);
     render_to_buffer(&mut buffer, area, &state); // should not panic
 
+    // At 80x24 the compact ribbon fits, so Normal mode renders with the full label.
     let text: String = buffer.content.iter().map(|cell| cell.symbol()).collect();
     assert!(text.contains("Zone Timeline"));
     assert!(
-        text.contains("BST"),
-        "should contain TZ abbreviation label for Europe/London in April, got: {text}"
+        text.contains("London"),
+        "should show the zone label at the 80x24 floor, got: {text}"
     );
 }
 
 #[test]
-fn micro_mode_many_zones_shows_scrollbar_at_80x24() {
+fn many_zones_render_at_80x24() {
     use zonetimeline_tui::config::SessionSeed;
 
     let zones: Vec<String> = vec![
@@ -2250,7 +1918,7 @@ fn micro_mode_many_zones_shows_scrollbar_at_80x24() {
 }
 
 #[test]
-fn micro_mode_help_overlay_renders_at_80x24() {
+fn help_overlay_renders_at_80x24() {
     let mut seed = support::fixture_seed();
     seed.nhours = 24;
     seed.ordered_zones = vec![
@@ -2269,9 +1937,44 @@ fn micro_mode_help_overlay_renders_at_80x24() {
     render_to_buffer(&mut buffer, area, &state); // should not panic
 
     let text: String = buffer.content.iter().map(|cell| cell.symbol()).collect();
-    // The help overlay should be visible on top of micro mode
+    // The help overlay should be visible on top of the timeline
     assert!(
         text.contains("Keybindings") || text.contains("help") || text.contains("scroll"),
-        "help overlay should render on top of micro mode"
+        "help overlay should render on top of the timeline"
     );
+}
+
+#[test]
+fn cursor_starts_at_anchor_column() {
+    let mut seed = support::fixture_seed();
+    seed.nhours = 24;
+    let model = ComparisonModel::build(seed, support::fixed_now()).unwrap();
+    let state = AppState::new(model, support::fixed_now());
+    assert_eq!(state.cursor_minutes, 12 * 60); // (nhours / 2) * 60
+    assert_eq!(state.cursor_minutes / 60, 12);
+}
+
+#[test]
+fn cursor_steps_by_half_hour_and_clamps() {
+    let mut seed = support::fixture_seed();
+    seed.nhours = 24;
+    let model = ComparisonModel::build(seed, support::fixed_now()).unwrap();
+    let mut state = AppState::new(model, support::fixed_now());
+    state.cursor_minutes = 0;
+    state.focus_left();
+    assert_eq!(state.cursor_minutes, 0); // clamped at 0
+    state.focus_right();
+    assert_eq!(state.cursor_minutes, 30);
+}
+
+#[test]
+fn jump_to_now_snaps_cursor_to_now_column() {
+    let mut seed = support::fixture_seed();
+    seed.nhours = 24;
+    // fixture anchor_time = None => AnchorSpec::Now => a slot carries current_minute_offset
+    let model = ComparisonModel::build(seed, support::fixed_now()).unwrap();
+    let mut state = AppState::new(model, support::fixed_now());
+    state.cursor_minutes = 0;
+    state.jump_to_now();
+    assert_eq!(state.cursor_minutes / 60, 12); // anchor / now column
 }

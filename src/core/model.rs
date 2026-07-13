@@ -371,6 +371,46 @@ fn build_timeline_slots(
         .collect()
 }
 
+/// Count how many of `zones` have `instant` inside their core work window
+/// (`in_count`) and how many are reachable via core **or** shoulder
+/// (`reach_count`). Single source of truth for the minute bitmap and the TUI
+/// ribbon/overlap strip so their availability tiers can never drift apart.
+pub fn reach_counts(
+    zones: &[ResolvedZone],
+    instant: DateTime<Utc>,
+    shoulder_minutes: u16,
+) -> (usize, usize) {
+    let mut in_count = 0usize;
+    let mut reach_count = 0usize;
+    for zone in zones {
+        let m = zone.handle.minute_of_day(instant);
+        if zone.window.contains(m) {
+            in_count += 1;
+            reach_count += 1;
+        } else if zone.window.shoulder_contains(m, shoulder_minutes) {
+            reach_count += 1;
+        }
+    }
+    (in_count, reach_count)
+}
+
+/// Classify `(in_count, reach_count)` against `total` zones into a
+/// [`MinuteClass`] tier. The canonical rule shared by the minute bitmap and the
+/// TUI overlap strip.
+pub fn classify_reach(in_count: usize, reach_count: usize, total: usize) -> MinuteClass {
+    if total == 0 {
+        MinuteClass::None
+    } else if in_count == total {
+        MinuteClass::Ideal
+    } else if reach_count == total {
+        MinuteClass::Feasible
+    } else if reach_count > 0 {
+        MinuteClass::Partial(reach_count as u8)
+    } else {
+        MinuteClass::None
+    }
+}
+
 /// Build a minute-resolution bitmap classifying every minute in the timeline.
 ///
 /// For each minute, we count how many zones have that instant inside their
@@ -397,41 +437,8 @@ fn build_minute_bitmap(
 
     for minute in 0..total_minutes {
         let instant = start_utc + Duration::minutes(minute);
-
-        if total_zones == 0 {
-            bitmap.push(MinuteClass::None);
-            continue;
-        }
-
-        // Count zones whose work window or shoulder contains this minute
-        let mut in_count = 0usize;
-        let mut reach_count = 0usize;
-
-        for zone in zones {
-            let m = zone.handle.minute_of_day(instant);
-            let in_window = zone.window.contains(m);
-            let in_shoulder = zone.window.shoulder_contains(m, shoulder_minutes);
-
-            if in_window {
-                in_count += 1;
-                reach_count += 1;
-            } else if in_shoulder {
-                reach_count += 1;
-            }
-        }
-
-        // Classify based on how many zones are in-window vs reachable
-        let class = if in_count == total_zones {
-            MinuteClass::Ideal
-        } else if reach_count == total_zones {
-            MinuteClass::Feasible
-        } else if reach_count > 0 {
-            MinuteClass::Partial(reach_count as u8)
-        } else {
-            MinuteClass::None
-        };
-
-        bitmap.push(class);
+        let (in_count, reach_count) = reach_counts(zones, instant, shoulder_minutes);
+        bitmap.push(classify_reach(in_count, reach_count, total_zones));
     }
 
     bitmap

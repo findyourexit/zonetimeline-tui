@@ -5,227 +5,89 @@
 //! and overlays any active modal or help screen. Everything writes directly to
 //! a ratatui [`Buffer`].
 
+use chrono::Timelike;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Color, Style, Stylize};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
     Block, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, StatefulWidget,
     Widget, Wrap,
 };
 
+use crate::core::model::MinuteClass;
 use crate::tui::forms::Modal;
+use crate::tui::palette::{Capability, Palette, Role};
+use crate::tui::ribbon::{self, RibbonState};
 use crate::tui::state::AppState;
 
-const UTC_DISPLAY_LABEL: &str = "Coordinated Universal Time (UTC)";
-
-/// Abbreviate a timezone for Micro Mode display.
+/// The minimum terminal (width, height) for a legible render.
 ///
-/// For named IANA zones, returns the standard TZ abbreviation (e.g. `EST`,
-/// `BST`, `AEST`) resolved at the given UTC instant (DST-aware). For fixed
-/// offsets, returns a compact signed string like `+5:30` or `-4`. The result
-/// is truncated to `max_width` characters.
-pub fn micro_zone_label(
-    zone: &crate::core::timezones::ZoneHandle,
-    anchor: chrono::DateTime<chrono::Utc>,
-    max_width: usize,
-) -> String {
-    let raw = match zone {
-        crate::core::timezones::ZoneHandle::Named(tz) => {
-            use chrono::Offset;
-            use chrono_tz::OffsetName;
-            let dt = anchor.with_timezone(tz);
-            match dt.offset().abbreviation() {
-                Some(abbr) => abbr.to_string(),
-                // Many IANA zones (e.g. America/Bogota, America/Lima) use numeric
-                // offset strings in the tz database, so chrono-tz returns None.
-                // Fall back to a compact signed offset like "-5" or "+5:30".
-                None => {
-                    let secs = dt.offset().fix().local_minus_utc();
-                    if secs == 0 {
-                        "+0".to_string()
-                    } else {
-                        let sign = if secs < 0 { '-' } else { '+' };
-                        let abs = secs.unsigned_abs();
-                        let h = abs / 3600;
-                        let m = (abs % 3600) / 60;
-                        if m == 0 {
-                            format!("{sign}{h}")
-                        } else {
-                            format!("{sign}{h}:{m:02}")
-                        }
-                    }
-                }
-            }
-        }
-        crate::core::timezones::ZoneHandle::Fixed(offset) => {
-            let secs = offset.local_minus_utc();
-            if secs == 0 {
-                "+0".to_string()
-            } else {
-                let sign = if secs < 0 { '-' } else { '+' };
-                let abs = secs.unsigned_abs();
-                let h = abs / 3600;
-                let m = (abs % 3600) / 60;
-                if m == 0 {
-                    format!("{sign}{h}")
-                } else {
-                    format!("{sign}{h}:{m:02}")
-                }
-            }
-        }
-    };
-    raw.chars().take(max_width).collect()
-}
-
-/// Compute the minimum terminal (width, height) required to render the TUI
-/// in compact mode for the current state (slot count, label widths, etc.).
-///
-/// The width accounts for: zone_label_col + separator + offset_col + all compact slots
-/// plus block borders and a frame-right-edge column.
-///
-/// The height accounts for: header + minimum timeline (inner >= 4) + footer + controls.
-pub fn min_terminal_size(state: &AppState) -> (u16, u16) {
-    let slot_count = state.model.timeline_slots.len() as u16;
-
-    // Zone column width in compact mode (same logic as render_timeline)
-    let utc_label_len = UTC_DISPLAY_LABEL.chars().count() as u16;
-    let max_label_len = state
-        .model
-        .zones
-        .iter()
-        .map(|z| z.label.chars().count() as u16)
-        .max()
-        .unwrap_or(4)
-        .max(utc_label_len);
-    // In compact mode: zone_width = max_label_len.clamp(9, available.max(9))
-    // At the minimum width, available is tight, so zone_width = 9 (the minimum clamp).
-    // But we need at least enough width for labels to be readable.
-    // Use the minimum clamp value of 9 for the threshold calculation.
-    let zone_width: u16 = max_label_len.clamp(9, 32);
-
-    // Inner width: zone_width + 1(sep) + offset_col(7) + slots*(slot_width(2)+1(sep)) + 1(frame right edge)
-    // slot_x_positions[i] = zone_width + 1 + 7 + i * 3
-    // Last slot rightmost pixel: slot_x_positions[last] + 2
-    // Frame right edge: slot_x_positions[last] + 2 (needs < inner.width)
-    // So min_inner_width = zone_width + 8 + (slot_count - 1) * 3 + 2 + 1
-    //                    = zone_width + 8 + slot_count * 3
-    let min_inner_width = zone_width + 8 + slot_count * 3;
-    // Terminal width = inner_width + 2 (block left/right borders)
-    let min_width = min_inner_width + 2;
-
-    // Height: header + timeline_area + footer + controls
-    // Timeline inner needs >= 4 (frame_top + header + utc_row + frame_bottom).
-    // Timeline area = inner + 2 borders = 6.
-    // But the layout uses Constraint::Min(10) for timeline — when space is short,
-    // timeline gets area.height - header - footer - controls.
-    // We need that remainder >= 6 for inner >= 4.
-    //
-    // header_height and controls_height depend on the terminal width, so we compute
-    // them at min_width.
-    let header_height = compute_header_height(state, min_width);
-    let controls_height = compute_controls_height(state, min_width);
-    let footer_height: u16 = 10;
-    let min_timeline_area: u16 = 6; // inner 4 + 2 borders
-
-    let min_height = header_height + min_timeline_area + footer_height + controls_height;
-
-    (min_width, min_height)
+/// The ribbon layout scales to fill any width and scrolls vertically when there
+/// are more zones than rows, so the only hard requirement is the absolute floor
+/// below which the resize guard is shown.
+pub fn min_terminal_size(_state: &AppState) -> (u16, u16) {
+    (80, 24)
 }
 
 /// Render the entire UI into `buffer`.
 ///
-/// Uses a three-tier rendering strategy:
-/// 1. **Resize guard** – below 80×24 the terminal is too small for any mode;
-///    show a "Resize terminal" message.
-/// 2. **Micro Mode** – at or above 80×24 but below the normal minimum; render
-///    only the timeline grid (no offset column) with a minimal controls hint.
-/// 3. **Normal mode** – full header, timeline, footer panels and controls bar.
-///
-/// Modals and the help overlay are painted on top in every mode.
+/// Below the 80×24 floor a "Resize terminal" guard is shown. Above it, the full
+/// layout (header, timeline, footer panels, controls) is rendered; the ribbon
+/// timeline scales to fill the pane width and scrolls vertically when there are
+/// more zones than rows. Modals and the help overlay are painted on top.
 pub fn render_to_buffer(buffer: &mut Buffer, area: Rect, state: &AppState) {
-    // Absolute floor: 80x24 for Micro Mode
-    if area.width < 80 || area.height < 24 {
+    render_to_buffer_with_palette(buffer, area, state, &Palette::from_env());
+}
+
+/// Render the entire UI using an explicit [`Palette`].
+///
+/// Used by tests to inject a fixed capability; [`render_to_buffer`] delegates
+/// here after resolving the palette from the environment.
+pub fn render_to_buffer_with_palette(
+    buffer: &mut Buffer,
+    area: Rect,
+    state: &AppState,
+    palette: &Palette,
+) {
+    // Absolute floor: below 80x24 nothing legible fits — show the resize guard.
+    let (min_w, min_h) = min_terminal_size(state);
+    if area.width < min_w || area.height < min_h {
         Paragraph::new("Resize terminal to at least 80x24")
             .block(Block::bordered().title("Zone Timeline"))
             .render(area, buffer);
         return;
     }
 
-    let (normal_min_w, normal_min_h) = min_terminal_size(state);
-    let micro = area.width < normal_min_w || area.height < normal_min_h;
+    // Above the floor the ribbon layout scales to fill the pane width and scrolls
+    // vertically when there are more zones than rows.
+    let header_height = compute_header_height(state, area.width);
+    let controls_height = compute_controls_height(state, area.width);
 
-    if micro {
-        // Micro Mode: timeline + minimal controls only
-        let [timeline_area, controls_area] =
-            Layout::vertical([Constraint::Min(6), Constraint::Length(1)]).areas(area);
+    let [header_area, timeline_area, footer_area, controls_area] = Layout::vertical([
+        Constraint::Length(header_height),
+        Constraint::Min(10),
+        Constraint::Length(10),
+        Constraint::Length(controls_height),
+    ])
+    .areas(area);
 
-        render_timeline_micro(buffer, timeline_area, state);
-        render_controls_micro(buffer, controls_area);
-    } else {
-        // Normal mode
-        let header_height = compute_header_height(state, area.width);
-        let controls_height = compute_controls_height(state, area.width);
+    render_header(buffer, header_area, state, palette);
+    render_timeline(buffer, timeline_area, state, palette);
+    render_footer(buffer, footer_area, state, palette);
+    render_controls(buffer, controls_area, state, palette);
 
-        let [header_area, timeline_area, footer_area, controls_area] = Layout::vertical([
-            Constraint::Length(header_height),
-            Constraint::Min(10),
-            Constraint::Length(10),
-            Constraint::Length(controls_height),
-        ])
-        .areas(area);
-
-        render_header(buffer, header_area, state);
-        render_timeline(buffer, timeline_area, state);
-        render_footer(buffer, footer_area, state);
-        render_controls(buffer, controls_area, state);
-    }
-
-    render_modal(buffer, area, state);
+    render_modal(buffer, area, state, palette);
 
     if state.show_help {
-        render_help(buffer, area);
+        render_help(buffer, area, palette);
     }
 }
 
-/// Compute the total header section height (content lines + 2 for borders).
-/// Content lines are clamped to 1..=3.
-pub fn compute_header_height(state: &AppState, terminal_width: u16) -> u16 {
-    let inner_width = terminal_width.saturating_sub(2) as usize; // subtract left/right border
-    if inner_width == 0 {
-        return 3; // minimum: 1 content line + 2 borders
-    }
-
-    // Measure the summary spans total character width
-    let mut total_chars: usize = 0;
-    for (i, zone) in state.model.zones.iter().enumerate() {
-        if i > 0 {
-            total_chars += 5; // "  |  "
-        }
-        total_chars += zone.label.chars().count();
-        total_chars += 1; // space
-        total_chars += 5; // "HH:MM"
-        let offset_secs = zone.handle.utc_offset_seconds(state.now_utc);
-        let offset_str = format!(
-            " ({})",
-            crate::core::timezones::format_utc_offset_short(offset_secs)
-        );
-        total_chars += offset_str.chars().count();
-    }
-
-    let mut content_lines = if total_chars == 0 {
-        1
-    } else {
-        total_chars.div_ceil(inner_width) as u16
-    };
-
-    // Add status line if present
-    if state.status.is_some() {
-        content_lines += 1;
-    }
-
-    let clamped = content_lines.clamp(1, 3);
-    clamped + 2 // add top/bottom border
+/// Header height: one legend line (plus one for an active status line) and borders.
+pub fn compute_header_height(state: &AppState, _terminal_width: u16) -> u16 {
+    let content_lines = 1 + u16::from(state.status.is_some());
+    content_lines.clamp(1, 3) + 2
 }
 
 /// Compute the controls bar height: 1 if spans fit on one line, 2 otherwise.
@@ -239,111 +101,151 @@ pub fn compute_controls_height(state: &AppState, terminal_width: u16) -> u16 {
     }
 }
 
-/// Compute the total character width of all control bar spans.
+/// Total character width of the controls bar (sum of all segment contents).
 fn compute_controls_char_width(state: &AppState) -> usize {
-    // Reproduce the span content character counts from render_controls
-    let anchor_str = format!("{} UTC", state.model.anchor.format("%Y-%m-%d %H:%M"));
-    let sort_str = format!(" {}", state.sort_mode.label());
-
-    let parts: &[&str] = &[
-        " Anchor ",
-        &anchor_str,
-        "  ",
-        "Sort:",
-        &sort_str,
-        "  ",
-        "h/l",
-        " scroll",
-        "  ",
-        "j/k",
-        " zones",
-        "  ",
-        "o",
-        " order",
-        "  ",
-        "a/x",
-        " +/-",
-        "  ",
-        "e",
-        " edit",
-        "  ",
-        "s",
-        " save",
-        "  ",
-        "?",
-        " help",
-        "  ",
-        "q",
-        " quit",
-    ];
-    parts.iter().map(|s| s.chars().count()).sum()
+    controls_segments(state)
+        .iter()
+        .map(|(text, _)| text.chars().count())
+        .sum()
 }
 
-fn render_header(buffer: &mut Buffer, area: Rect, state: &AppState) {
-    let mut summary_spans: Vec<Span<'static>> = Vec::new();
-    for (i, zone) in state.model.zones.iter().enumerate() {
-        if i > 0 {
-            summary_spans.push("  |  ".dark_gray());
-        }
-        let local = zone.handle.local_time(state.now_utc);
-        let offset_secs = zone.handle.utc_offset_seconds(state.now_utc);
-        summary_spans.push(Span::styled(zone.label.clone(), Style::new().cyan()));
-        summary_spans.push(Span::raw(" "));
-        summary_spans.push(Span::styled(
-            format!("{}", local.format("%H:%M")),
-            Style::new().bold(),
-        ));
-        summary_spans.push(Span::styled(
-            format!(
-                " ({})",
-                crate::core::timezones::format_utc_offset_short(offset_secs)
-            ),
-            Style::new().dark_gray(),
-        ));
-    }
+/// Ordered controls-bar segments as `(text, role)` pairs, grouped Navigate /
+/// Zones / General. Palette-free so width measurement and styled rendering
+/// share one content source and never drift.
+fn controls_segments(state: &AppState) -> Vec<(String, Role)> {
+    let key = Role::KeyHint;
+    let desc = Role::Muted;
+    vec![
+        (" h/l".into(), key),
+        (" cursor".into(), desc),
+        ("  ".into(), desc),
+        ("j/k".into(), key),
+        (" zones".into(), desc),
+        ("  ".into(), desc),
+        ("n".into(), key),
+        (" now".into(), desc),
+        ("  │  ".into(), desc),
+        ("a".into(), key),
+        (" add".into(), desc),
+        ("  ".into(), desc),
+        ("x".into(), key),
+        (" del".into(), desc),
+        ("  ".into(), desc),
+        ("J/K".into(), key),
+        (" move".into(), desc),
+        ("  ".into(), desc),
+        ("e".into(), key),
+        (" edit".into(), desc),
+        ("  ".into(), desc),
+        ("o".into(), key),
+        (format!(" sort:{}", state.sort_mode.label()), desc),
+        ("  │  ".into(), desc),
+        ("s".into(), key),
+        (" save".into(), desc),
+        ("  ".into(), desc),
+        ("?".into(), key),
+        (" help".into(), desc),
+        ("  ".into(), desc),
+        ("q".into(), key),
+        (" quit".into(), desc),
+    ]
+}
 
-    let inner_width = area.width.saturating_sub(2) as usize;
-    let total_chars: usize = summary_spans
-        .iter()
-        .map(|s| s.content.chars().count())
-        .sum();
-    let max_content_lines = (area.height.saturating_sub(2)) as usize; // area already sized by compute_header_height
+/// Styled controls-bar spans, resolving each segment's role through `palette`.
+fn controls_spans(state: &AppState, palette: &Palette) -> Vec<Span<'static>> {
+    controls_segments(state)
+        .into_iter()
+        .map(|(text, role)| Span::styled(text, palette.style(role)))
+        .collect()
+}
 
-    // Check if summary overflows the available content lines
-    let summary_lines_needed = if inner_width > 0 {
-        total_chars.div_ceil(inner_width)
-    } else {
-        1
+fn render_header(buffer: &mut Buffer, area: Rect, state: &AppState, palette: &Palette) {
+    let clock = state.model.anchor.format("%Y-%m-%d %H:%M");
+    let anchor_label = match state.session.anchor {
+        crate::core::model::AnchorSpec::Now => "Now",
+        crate::core::model::AnchorSpec::Explicit(_) => "Date",
     };
-    let overflows = summary_lines_needed > max_content_lines;
+    let title = format!(" {anchor_label} · {clock} UTC ");
 
-    let mut lines: Vec<Line<'static>> = Vec::new();
-
-    if overflows && max_content_lines > 0 {
-        // Truncate: fit into max_content_lines, replace last 3 chars with "..."
-        let char_budget = max_content_lines * inner_width;
-        let truncated_spans = truncate_spans_with_ellipsis(&summary_spans, char_budget);
-        lines.push(Line::from(truncated_spans));
-    } else {
-        lines.push(Line::from(summary_spans));
+    let mut spans = legend_spans(palette);
+    let inner_width = area.width.saturating_sub(2) as usize;
+    let total: usize = spans.iter().map(|s| s.content.chars().count()).sum();
+    if inner_width > 0 && total > inner_width {
+        spans = truncate_spans_with_ellipsis(&spans, inner_width, palette);
     }
 
-    // Only add status line if present (suppress empty status)
+    let mut lines: Vec<Line<'static>> = vec![Line::from(spans)];
     if let Some(status) = &state.status {
-        lines.push(Line::from(status.clone()));
+        lines.push(Line::from(Span::styled(
+            status.clone(),
+            palette.style(Role::Caution),
+        )));
     }
 
     Paragraph::new(lines)
-        .block(Block::bordered().title("Current Times"))
-        .wrap(Wrap { trim: true })
+        .block(Block::bordered().title(title))
         .render(area, buffer);
+}
+
+/// A representative, legible foreground colour for a legend swatch.
+fn legend_color(palette: &Palette, role: Role) -> Color {
+    match palette.capability() {
+        Capability::Truecolor => match role {
+            Role::Core => Color::Rgb(0x2e, 0xcc, 0x71),
+            Role::Shoulder => Color::Rgb(0xd0, 0x8a, 0x3a),
+            _ => Color::Rgb(0x6a, 0x6f, 0x7e),
+        },
+        _ => match role {
+            Role::Core => Color::Green,
+            Role::Shoulder => Color::Yellow,
+            _ => Color::DarkGray,
+        },
+    }
+}
+
+/// Build the availability + marker legend shown in the header.
+///
+/// In monochrome the swatches fall back to the same shade characters the ribbon
+/// uses, so the key stays meaningful without colour.
+fn legend_spans(palette: &Palette) -> Vec<Span<'static>> {
+    let mono = palette.capability() == Capability::Monochrome;
+    let swatch = |role: Role, shade: &'static str| -> Span<'static> {
+        if mono {
+            Span::raw(shade)
+        } else {
+            Span::styled("██", Style::new().fg(legend_color(palette, role)))
+        }
+    };
+    let label = |t: &'static str| Span::styled(t, palette.style(Role::Muted));
+    let marker = |glyph: &'static str, role: Role, t: &'static str| -> [Span<'static>; 2] {
+        [
+            Span::styled(glyph, palette.style(role).add_modifier(Modifier::BOLD)),
+            Span::styled(format!(" {t}"), palette.style(Role::Muted)),
+        ]
+    };
+    let mut spans = vec![
+        swatch(Role::Core, "██"),
+        label(" Core   "),
+        swatch(Role::Shoulder, "▓▓"),
+        label(" Shoulder   "),
+        swatch(Role::Off, "░░"),
+        label(" Off     "),
+    ];
+    spans.extend(marker("▼", Role::MarkerNow, "Now"));
+    spans.push(label("  "));
+    spans.extend(marker("◆", Role::MarkerCursor, "Cursor"));
+    spans
 }
 
 /// Truncate a list of spans to fit within `char_budget` characters,
 /// replacing the last 3 characters with "...".
-fn truncate_spans_with_ellipsis(spans: &[Span<'static>], char_budget: usize) -> Vec<Span<'static>> {
+fn truncate_spans_with_ellipsis(
+    spans: &[Span<'static>],
+    char_budget: usize,
+    palette: &Palette,
+) -> Vec<Span<'static>> {
     if char_budget < 3 {
-        return vec![Span::raw("...")];
+        return vec![Span::styled("...", palette.style(Role::Muted))];
     }
     let budget = char_budget - 3; // reserve space for "..."
     let mut result: Vec<Span<'static>> = Vec::new();
@@ -363,11 +265,11 @@ fn truncate_spans_with_ellipsis(spans: &[Span<'static>], char_budget: usize) -> 
         }
     }
 
-    result.push("...".dark_gray());
+    result.push(Span::styled("...", palette.style(Role::Muted)));
     result
 }
 
-fn render_timeline(buffer: &mut Buffer, area: Rect, state: &AppState) {
+fn render_timeline(buffer: &mut Buffer, area: Rect, state: &AppState, palette: &Palette) {
     let block = Block::bordered().title("Zone Timeline");
     let inner = block.inner(area);
     block.render(area, buffer);
@@ -377,45 +279,51 @@ fn render_timeline(buffer: &mut Buffer, area: Rect, state: &AppState) {
     }
 
     let slot_count = state.model.timeline_slots.len();
+    if slot_count == 0 {
+        return;
+    }
 
-    // Compute zone column width based on the longest label (including the UTC display label for fixed row)
-    let utc_label_len = UTC_DISPLAY_LABEL.chars().count() as u16;
-    let max_label_len = state
+    // Zone label gutter (longest label or the "Overlap" header, clamped).
+    let max_label = state
         .model
         .zones
         .iter()
-        .map(|z| z.label.chars().count() as u16)
+        .map(|z| z.label.chars().count())
         .max()
-        .unwrap_or(4)
-        .max(utc_label_len);
+        .unwrap_or(3)
+        .max("Overlap".len());
+    let zone_width = (max_label as u16).clamp(7, 20);
 
-    let offset_col_width: u16 = 7; // "+00:00 " with trailing space
-    let wide_zone_width = max_label_len.max(18);
-    let wide_table_width = wide_zone_width
-        + offset_col_width
-        + (slot_count as u16).saturating_mul(5)
-        + slot_count as u16;
-    let compact = inner.width < wide_table_width;
+    let ribbon_x0 = zone_width + 1; // gutter + separator
+    let ribbon_w = inner.width.saturating_sub(ribbon_x0);
+    if ribbon_w < 2 {
+        return;
+    }
+    let ribbon_w_usize = ribbon_w as usize;
 
-    let (zone_width, slot_width) = if compact {
-        let compact_slot_space = (slot_count as u16) * 3;
-        let available = inner.width.saturating_sub(compact_slot_space);
-        (max_label_len.clamp(9, available.max(9)), 2u16)
-    } else {
-        (wide_zone_width, 5u16)
+    // The ribbon fills the full available width: every column maps to a slice of
+    // the visible time range, so the timeline scales to the pane.
+    let total_minutes = (slot_count as i64) * 60;
+    let m_per_col = total_minutes as f64 / ribbon_w as f64;
+    let timeline_start = state.model.timeline_slots[0].start_utc;
+    let shoulder_minutes = state.session.shoulder_hours * 60;
+
+    // Map a minute offset from the timeline start to a ribbon column.
+    let col_of = |minute: i64| -> usize {
+        ((minute as f64 / m_per_col) as i64).clamp(0, ribbon_w as i64 - 1) as usize
     };
 
-    let frame_top_row = 0u16;
-    let header_row = 1u16;
-    let first_zone_row = 2u16;
+    // Row layout: a merged UTC axis/reference row on top (hour scale + "UTC"
+    // gutter label), then the user zone ribbons, the OVERLAP strip, and a
+    // one-line best-window summary beneath it.
+    let axis_row = 0u16;
+    let first_zone_row = 1u16;
     let user_zone_count = state.display_order.len();
-    // Available rows for user zones: inner.height - 4 (frame_top + header + utc_row + frame_bottom)
-    let available_user_rows = inner.height.saturating_sub(4) as usize;
+    // Reserve three non-zone rows: the UTC axis + strip + best-window summary.
+    let available_user_rows = inner.height.saturating_sub(3) as usize;
     let visible_user_count = user_zone_count.min(available_user_rows);
     let needs_scroll = user_zone_count > available_user_rows;
-
-    // Compute scroll offset to keep selected zone visible
-    let timeline_scroll_offset = if needs_scroll && state.selected_zone > 0 {
+    let scroll_offset = if needs_scroll && state.selected_zone > 0 {
         let display_idx = state.selected_zone - 1;
         if display_idx >= available_user_rows {
             display_idx - available_user_rows + 1
@@ -425,21 +333,6 @@ fn render_timeline(buffer: &mut Buffer, area: Rect, state: &AppState) {
     } else {
         0
     };
-
-    let frame_bottom_row = first_zone_row + 1 + visible_user_count as u16;
-
-    let slot_x_positions: Vec<u16> = (0..slot_count)
-        .map(|i| zone_width + 1 + offset_col_width + (i as u16) * (slot_width + 1))
-        .collect();
-
-    let now_col: Option<usize> = state
-        .model
-        .timeline_slots
-        .iter()
-        .position(|slot| slot.current_minute_offset.is_some());
-    let selected_col: usize = state.focused_hour;
-
-    let shoulder_minutes = state.session.shoulder_hours * 60;
 
     let write_text = |buf: &mut Buffer, x: u16, y: u16, text: &str, style: Style| {
         for (col, ch) in (x..).zip(text.chars()) {
@@ -453,171 +346,155 @@ fn render_timeline(buffer: &mut Buffer, area: Rect, state: &AppState) {
         }
     };
 
-    // Render header row — column header
-    let col_header = format!("{:<width$}", "Zone", width = zone_width as usize);
-    write_text(buffer, 0, header_row, &col_header, Style::new().bold());
-    write_text(
-        buffer,
-        zone_width + 1,
-        header_row,
-        "Offset",
-        Style::new().bold(),
-    );
+    // Resolve marker columns up front so axis labels can dodge the carets.
+    let now_col = state
+        .model
+        .timeline_slots
+        .iter()
+        .enumerate()
+        .find(|(_, s)| s.current_minute_offset.is_some())
+        .map(|(idx, s)| {
+            col_of((idx as i64) * 60 + i64::from(s.current_minute_offset.unwrap_or(0)))
+        });
+    let cursor_col = col_of(state.cursor_minutes);
 
-    // Render fixed UTC row (always first zone row)
+    // --- Time axis (UTC hours), labelled at a density that fits the width ---
+    let cols_per_hour = ribbon_w as f64 / slot_count as f64;
+    let label_every = ((6.0 / cols_per_hour).ceil() as usize).max(1);
+    for (off, hour) in ribbon::hour_ticks(
+        timeline_start.hour(),
+        timeline_start.minute(),
+        total_minutes,
+        label_every,
+    ) {
+        let col = col_of(off);
+        // A 2-char hour label collides with a marker if either of its cells
+        // lands on a marker column; skip it so the caret reads cleanly.
+        let collides = [col, col + 1]
+            .iter()
+            .any(|&c| now_col == Some(c) || cursor_col == c);
+        if collides {
+            continue;
+        }
+        write_text(
+            buffer,
+            ribbon_x0 + col as u16,
+            axis_row,
+            &format!("{hour:02}"),
+            palette.style(Role::Axis),
+        );
+    }
+
+    // --- UTC label in the axis-row gutter (the hour scale is itself UTC) ---
     {
-        let row_y = first_zone_row;
         let utc_selected = state.selected_zone == 0;
-        let dim_style = if utc_selected {
-            Style::new().cyan().bold().dim()
+        let label_style = if utc_selected {
+            palette.style(Role::LabelSelected).dim()
         } else {
             Style::new().dim()
         };
-
-        let label: String = UTC_DISPLAY_LABEL
-            .chars()
-            .take(zone_width as usize)
-            .collect();
-        write_text(buffer, 0, row_y, &label, dim_style);
-        write_text(
-            buffer,
-            zone_width + 1,
-            row_y,
-            &crate::core::timezones::format_utc_offset(0),
-            dim_style,
-        );
-
-        let utc_handle =
-            crate::core::timezones::ZoneHandle::Fixed(chrono::FixedOffset::east_opt(0).unwrap());
-
-        for (slot_idx, slot) in state.model.timeline_slots.iter().enumerate() {
-            let local = utc_handle.local_time(slot.start_utc);
-            let text = if compact {
-                local.format("%H").to_string()
-            } else {
-                local.format("%H:%M").to_string()
-            };
-            let is_overlap = overlaps_slot(state, slot_idx);
-            let mut style = Style::new().dim();
-            if is_overlap {
-                style = style.underlined();
-            }
-            if utc_selected {
-                style = style.bold();
-            }
-            write_text(buffer, slot_x_positions[slot_idx], row_y, &text, style);
-        }
+        let label = fit_label("UTC", zone_width as usize);
+        write_text(buffer, 0, axis_row, &label, label_style);
     }
 
-    // Render user zone data rows (using display_order, with scroll offset)
+    // --- User zone ribbons (fill the full width; no day glyphs) ---
     for (visible_idx, display_idx) in
-        (timeline_scroll_offset..timeline_scroll_offset + visible_user_count).enumerate()
+        (scroll_offset..scroll_offset + visible_user_count).enumerate()
     {
-        let &model_idx = &state.display_order[display_idx];
+        let model_idx = state.display_order[display_idx];
         let zone = &state.model.zones[model_idx];
-        let row_y = first_zone_row + 1 + visible_idx as u16; // +1 for UTC row
-        let zone_selected = state.selected_zone == display_idx + 1; // +1 for UTC row
+        let row_y = first_zone_row + visible_idx as u16;
+        let zone_selected = state.selected_zone == display_idx + 1;
 
         let label_style = if zone_selected {
-            Style::new().cyan().bold()
+            palette.style(Role::LabelSelected)
         } else {
-            Style::new()
+            palette.style(Role::Label)
         };
-
-        let label: String = zone.label.chars().take(zone_width as usize).collect();
+        let label = fit_label(&zone.label, zone_width as usize);
         write_text(buffer, 0, row_y, &label, label_style);
 
-        let offset_secs = zone.handle.utc_offset_seconds(state.now_utc);
-        let offset_str = crate::core::timezones::format_utc_offset(offset_secs);
-        write_text(buffer, zone_width + 1, row_y, &offset_str, label_style);
-
-        for (slot_idx, slot) in state.model.timeline_slots.iter().enumerate() {
-            let local = zone.handle.local_time(slot.start_utc);
-            let minute_of_day = zone.handle.minute_of_day(slot.start_utc);
-            let in_window = zone.window.contains(minute_of_day);
-            let in_shoulder = zone
-                .window
-                .shoulder_contains(minute_of_day, shoulder_minutes);
-            let is_overlap = overlaps_slot(state, slot_idx);
-
-            let style = cell_style(&CellStyleInput {
-                in_window,
-                in_shoulder,
-                is_overlap,
-                zone_selected,
-                is_header: false,
+        let coverage =
+            ribbon::column_coverage(ribbon_w_usize, total_minutes, RIBBON_BLUR_CELLS, |m| {
+                let instant = timeline_start + chrono::Duration::minutes(m);
+                ribbon::classify(
+                    zone.handle.minute_of_day(instant),
+                    &zone.window,
+                    shoulder_minutes,
+                )
             });
-
-            let text = if compact {
-                local.format("%H").to_string()
-            } else {
-                local.format("%H:%M").to_string()
-            };
-            write_text(buffer, slot_x_positions[slot_idx], row_y, &text, style);
-        }
-    }
-
-    // Draw box-drawing frames
-    // Each entry: (column_index, style, top_row)
-    let frames: Vec<(usize, Style, u16)> = {
-        let selected_style = Style::new().white();
-        let now_style = Style::new().dark_gray();
-        let mut frames = Vec::new();
-        if let Some(nc) = now_col {
-            if nc == selected_col {
-                // Overlap: show now frame in white (selected frame hidden)
-                frames.push((nc, selected_style, frame_top_row));
-            } else {
-                // Different columns: now frame full-height, selected frame excludes header
-                frames.push((nc, now_style, frame_top_row));
-                frames.push((selected_col, selected_style, header_row));
-            }
-        } else {
-            // No now column: only selected frame (excludes header)
-            frames.push((selected_col, selected_style, header_row));
-        }
-        frames
-    };
-
-    for (col_idx, frame_style, top_row) in &frames {
-        if *col_idx >= slot_x_positions.len() {
-            continue;
-        }
-        draw_column_frame(
-            buffer,
-            inner,
-            slot_x_positions[*col_idx],
-            slot_width,
-            *top_row,
-            frame_bottom_row,
-            *frame_style,
-        );
-    }
-
-    // Draw "NOW" label in the header cell of the current-time column
-    if let Some(nc) = now_col
-        && nc < slot_x_positions.len()
-    {
-        let now_text = "NOW";
-        let text_len = now_text.len() as u16;
-        if slot_width >= text_len {
-            let padding = (slot_width - text_len) / 2;
-            let now_label_style = if nc == selected_col {
-                Style::new().white()
-            } else {
-                Style::new().dark_gray()
-            };
-            write_text(
+        for (i, counts) in coverage.iter().enumerate() {
+            draw_ribbon_cell(
                 buffer,
-                slot_x_positions[nc] + padding,
-                header_row,
-                now_text,
-                now_label_style,
+                inner.x + ribbon_x0 + i as u16,
+                inner.y + row_y,
+                *counts,
+                palette,
             );
         }
     }
 
-    // Scrollbar (only when content overflows)
+    // --- OVERLAP strip: one aggregate sample per column (coarse — a column may
+    // land a minute off the exact "Best" summary below, which scans every minute) ---
+    let strip_row = first_zone_row + visible_user_count as u16;
+    let total_zones = state.model.zones.len();
+    {
+        let lbl = fit_label("Overlap", zone_width as usize);
+        write_text(buffer, 0, strip_row, &lbl, palette.style(Role::PanelTitle));
+        for c in 0..ribbon_w_usize {
+            let m = ((c as f64 + 0.5) * m_per_col) as i64;
+            let instant = timeline_start + chrono::Duration::minutes(m);
+            let (in_count, reach_count) =
+                crate::core::model::reach_counts(&state.model.zones, instant, shoulder_minutes);
+            let class = ribbon::overlap_class(in_count, reach_count, total_zones);
+            draw_overlap_cell(
+                buffer,
+                inner.x + ribbon_x0 + c as u16,
+                inner.y + strip_row,
+                class,
+                reach_count,
+                total_zones,
+                palette,
+            );
+        }
+    }
+
+    // --- Best-window summary line (turns former dead space into the answer) ---
+    let summary_row = strip_row + 1;
+    if summary_row < inner.height {
+        let (text, style) = best_window_summary(state, total_zones, palette);
+        write_text(buffer, 0, summary_row, &text, style);
+    }
+
+    // --- NOW + cursor markers: overlay a caret + bg-preserving vertical rule ---
+    let draw_marker = |buf: &mut Buffer, col: usize, role: Role, caret: char| {
+        let fg = palette.style(role).fg;
+        let x = inner.x + ribbon_x0 + col as u16;
+        if let Some(cell) = buf.cell_mut((x, inner.y + axis_row)) {
+            cell.set_char(caret);
+            if let Some(f) = fg {
+                cell.set_fg(f);
+            }
+            cell.modifier.insert(Modifier::BOLD);
+        }
+        // Vertical rule through the ribbon rows; keep each cell's background so
+        // the cursor reads as an overlay, not a gap torn in the ribbon.
+        for ry in first_zone_row..=strip_row {
+            if let Some(cell) = buf.cell_mut((x, inner.y + ry)) {
+                cell.set_char('│');
+                if let Some(f) = fg {
+                    cell.set_fg(f);
+                }
+            }
+        }
+    };
+    if let Some(col) = now_col {
+        draw_marker(buffer, col, Role::MarkerNow, '▼');
+    }
+    // Cursor drawn last so it wins on overlap.
+    draw_marker(buffer, cursor_col, Role::MarkerCursor, '◆');
+
+    // Scrollbar (only when content overflows vertically)
     if needs_scroll {
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
             .begin_symbol(None)
@@ -629,514 +506,358 @@ fn render_timeline(buffer: &mut Buffer, area: Rect, state: &AppState) {
     }
 }
 
-/// Render the Zone Timeline panel in Micro Mode.
-///
-/// Compared to the normal `render_timeline`:
-/// - Zone column uses abbreviated labels (city name only, max 6 chars)
-/// - Offset column is hidden
-/// - Time slots are always 2-char compact (`HH`)
-/// - NOW/selected frames start at the header row (top border on header, data rows inside)
-/// - No "NOW" text label (too narrow)
-pub fn render_timeline_micro(buffer: &mut Buffer, area: Rect, state: &AppState) {
-    let block = Block::bordered().title("Zone Timeline");
-    let inner = block.inner(area);
-    block.render(area, buffer);
-
-    if inner.height < 4 || inner.width < 20 {
-        return;
+/// Truncate a zone label to `width` columns, appending `…` when it overflows.
+fn fit_label(label: &str, width: usize) -> String {
+    let count = label.chars().count();
+    if count <= width {
+        return label.chars().collect();
     }
-
-    let slot_count = state.model.timeline_slots.len();
-    let slot_width: u16 = 2; // always compact HH
-
-    // Zone column: fit within remaining space after slots
-    let slots_space = (slot_count as u16) * (slot_width + 1); // each slot is HH + 1 gap
-    let zone_width = inner.width.saturating_sub(slots_space).clamp(3, 6);
-
-    let header_row = 0u16;
-    let first_zone_row = 1u16;
-    let user_zone_count = state.display_order.len();
-    let available_user_rows = inner.height.saturating_sub(3) as usize; // header + utc_row + frame_bottom
-    let visible_user_count = user_zone_count.min(available_user_rows);
-    let needs_scroll = user_zone_count > available_user_rows;
-
-    let timeline_scroll_offset = if needs_scroll && state.selected_zone > 0 {
-        let display_idx = state.selected_zone - 1;
-        if display_idx >= available_user_rows {
-            display_idx - available_user_rows + 1
-        } else {
-            0
-        }
-    } else {
-        0
-    };
-
-    let frame_bottom_row = first_zone_row + 1 + visible_user_count as u16;
-
-    // Slot X positions: zone_width + slot_index * (slot_width + 1)
-    let slot_x_positions: Vec<u16> = (0..slot_count)
-        .map(|i| zone_width + (i as u16) * (slot_width + 1))
-        .collect();
-
-    let now_col: Option<usize> = state
-        .model
-        .timeline_slots
-        .iter()
-        .position(|slot| slot.current_minute_offset.is_some());
-    let selected_col: usize = state.focused_hour;
-
-    let shoulder_minutes = state.session.shoulder_hours * 60;
-
-    let write_text = |buf: &mut Buffer, x: u16, y: u16, text: &str, style: Style| {
-        for (col, ch) in (x..).zip(text.chars()) {
-            if col >= inner.width {
-                break;
-            }
-            if let Some(cell) = buf.cell_mut((inner.x + col, inner.y + y)) {
-                cell.set_char(ch);
-                cell.set_style(style);
-            }
-        }
-    };
-
-    // Header row — "Zone" label only (no Offset header)
-    let col_header: String = "Zone".chars().take(zone_width as usize).collect();
-    write_text(buffer, 0, header_row, &col_header, Style::new().bold());
-
-    // Render fixed UTC row
-    {
-        let row_y = first_zone_row;
-        let utc_selected = state.selected_zone == 0;
-        let dim_style = if utc_selected {
-            Style::new().cyan().bold().dim()
-        } else {
-            Style::new().dim()
-        };
-
-        let utc_label: String = "UTC".chars().take(zone_width as usize).collect();
-        write_text(buffer, 0, row_y, &utc_label, dim_style);
-
-        let utc_handle =
-            crate::core::timezones::ZoneHandle::Fixed(chrono::FixedOffset::east_opt(0).unwrap());
-
-        for (slot_idx, slot) in state.model.timeline_slots.iter().enumerate() {
-            let local = utc_handle.local_time(slot.start_utc);
-            let text = local.format("%H").to_string();
-            let is_overlap = overlaps_slot(state, slot_idx);
-            let mut style = Style::new().dim();
-            if is_overlap {
-                style = style.underlined();
-            }
-            if utc_selected {
-                style = style.bold();
-            }
-            write_text(buffer, slot_x_positions[slot_idx], row_y, &text, style);
-        }
+    if width <= 1 {
+        return label.chars().take(width).collect();
     }
-
-    // Render user zone data rows
-    for (visible_idx, display_idx) in
-        (timeline_scroll_offset..timeline_scroll_offset + visible_user_count).enumerate()
-    {
-        let &model_idx = &state.display_order[display_idx];
-        let zone = &state.model.zones[model_idx];
-        let row_y = first_zone_row + 1 + visible_idx as u16;
-        let zone_selected = state.selected_zone == display_idx + 1;
-
-        let label_style = if zone_selected {
-            Style::new().cyan().bold()
-        } else {
-            Style::new()
-        };
-
-        let label = micro_zone_label(&zone.handle, state.model.anchor, zone_width as usize);
-        write_text(buffer, 0, row_y, &label, label_style);
-
-        for (slot_idx, slot) in state.model.timeline_slots.iter().enumerate() {
-            let local = zone.handle.local_time(slot.start_utc);
-            let minute_of_day = zone.handle.minute_of_day(slot.start_utc);
-            let in_window = zone.window.contains(minute_of_day);
-            let in_shoulder = zone
-                .window
-                .shoulder_contains(minute_of_day, shoulder_minutes);
-            let is_overlap = overlaps_slot(state, slot_idx);
-
-            let style = cell_style(&CellStyleInput {
-                in_window,
-                in_shoulder,
-                is_overlap,
-                zone_selected,
-                is_header: false,
-            });
-
-            let text = local.format("%H").to_string();
-            write_text(buffer, slot_x_positions[slot_idx], row_y, &text, style);
-        }
-    }
-
-    // Draw box-drawing frames — top border on header_row, data rows below
-    let frames: Vec<(usize, Style, u16)> = {
-        let selected_style = Style::new().white();
-        let now_style = Style::new().dark_gray();
-        let mut frames = Vec::new();
-        if let Some(nc) = now_col {
-            if nc == selected_col {
-                frames.push((nc, selected_style, header_row));
-            } else {
-                frames.push((nc, now_style, header_row));
-                frames.push((selected_col, selected_style, header_row));
-            }
-        } else {
-            frames.push((selected_col, selected_style, header_row));
-        }
-        frames
-    };
-
-    for (col_idx, frame_style, top_row) in &frames {
-        if *col_idx >= slot_x_positions.len() {
-            continue;
-        }
-        draw_column_frame(
-            buffer,
-            inner,
-            slot_x_positions[*col_idx],
-            slot_width,
-            *top_row,
-            frame_bottom_row,
-            *frame_style,
-        );
-    }
-
-    // No "NOW" text label — too narrow in micro mode
-
-    // Scrollbar
-    if needs_scroll {
-        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
-            .begin_symbol(None)
-            .end_symbol(None);
-        let mut scrollbar_state = ScrollbarState::new(user_zone_count)
-            .position(state.selected_zone.saturating_sub(1))
-            .viewport_content_length(available_user_rows);
-        StatefulWidget::render(scrollbar, inner, buffer, &mut scrollbar_state);
-    }
+    let mut s: String = label.chars().take(width - 1).collect();
+    s.push('…');
+    s
 }
 
-/// Draw a box-drawing frame around a single timeline column.
-fn draw_column_frame(
-    buffer: &mut Buffer,
-    inner: Rect,
-    slot_x_offset: u16,
-    slot_width: u16,
-    frame_top_row: u16,
-    frame_bottom_row: u16,
-    style: Style,
-) {
-    let col_x = inner.x + slot_x_offset;
-    let left_gap_x = col_x.saturating_sub(1);
-    let right_gap_x = col_x + slot_width;
-    let header_row = frame_top_row + 1;
-
-    // Top border row
-    let top_y = inner.y + frame_top_row;
-    if let Some(cell) = buffer.cell_mut((left_gap_x, top_y)) {
-        cell.set_symbol("┌");
-        cell.set_style(style);
-    }
-    for dx in 0..slot_width {
-        if let Some(cell) = buffer.cell_mut((col_x + dx, top_y)) {
-            cell.set_symbol("─");
-            cell.set_style(style);
-        }
-    }
-    if right_gap_x < inner.x + inner.width
-        && let Some(cell) = buffer.cell_mut((right_gap_x, top_y))
-    {
-        cell.set_symbol("┐");
-        cell.set_style(style);
-    }
-
-    // Vertical edges on data rows (header + zone rows)
-    for row_y in header_row..=frame_bottom_row.saturating_sub(1) {
-        let y = inner.y + row_y;
-        if let Some(cell) = buffer.cell_mut((left_gap_x, y)) {
-            cell.set_symbol("│");
-            cell.set_style(style);
-        }
-        if right_gap_x < inner.x + inner.width
-            && let Some(cell) = buffer.cell_mut((right_gap_x, y))
-        {
-            cell.set_symbol("│");
-            cell.set_style(style);
-        }
-    }
-
-    // Bottom border row
-    let bottom_y = inner.y + frame_bottom_row;
-    if let Some(cell) = buffer.cell_mut((left_gap_x, bottom_y)) {
-        cell.set_symbol("└");
-        cell.set_style(style);
-    }
-    for dx in 0..slot_width {
-        if let Some(cell) = buffer.cell_mut((col_x + dx, bottom_y)) {
-            cell.set_symbol("─");
-            cell.set_style(style);
-        }
-    }
-    if right_gap_x < inner.x + inner.width
-        && let Some(cell) = buffer.cell_mut((right_gap_x, bottom_y))
-    {
-        cell.set_symbol("┘");
-        cell.set_style(style);
-    }
-}
-
-fn render_footer(buffer: &mut Buffer, area: Rect, state: &AppState) {
-    let [windows_area, zones_area, details_area] = Layout::horizontal([
-        Constraint::Percentage(34),
-        Constraint::Percentage(33),
-        Constraint::Percentage(33),
-    ])
-    .areas(area);
-
-    let working_window_lines: Vec<Line<'static>> = {
-        let windows = &state.model.classified_windows();
-        let has_ideal_or_feasible = windows.iter().any(|w| {
-            w.tier == crate::core::model::WindowTier::Ideal
-                || w.tier == crate::core::model::WindowTier::Feasible
-        });
-
-        let mut lines: Vec<Line<'static>> = Vec::new();
-
-        // Header text
-        if has_ideal_or_feasible {
-            let zone_label = selected_zone_label(state);
-            lines.push(Line::from(Span::styled(
-                format!("Times shown for {zone_label}"),
-                Style::new().dark_gray(),
-            )));
-        } else if !windows.is_empty() {
-            lines.push(Line::from(Span::styled(
-                "No ideal or feasible windows",
-                Style::new().dark_gray(),
-            )));
-            lines.push(Line::from(Span::styled(
-                "shared by the selected zones.",
-                Style::new().dark_gray(),
-            )));
-            let zone_label = selected_zone_label(state);
-            lines.push(Line::from(Span::styled(
-                format!("Times shown for {zone_label}"),
-                Style::new().dark_gray(),
-            )));
-        }
-
-        // Table rows
-        let header_lines = lines.len();
-        let panel_height = windows_area.height.saturating_sub(2) as usize; // minus border
-        let visible_rows = panel_height.saturating_sub(header_lines);
-
-        for window in windows.iter().take(visible_rows) {
-            let (tier_label, tier_color) = match window.tier {
-                crate::core::model::WindowTier::Ideal => ("Ideal    ", Color::Green),
-                crate::core::model::WindowTier::Feasible => ("Feasible ", Color::Yellow),
-                crate::core::model::WindowTier::LeastBad => ("Least Bad", Color::Red),
+/// Build the inline best-window summary shown beneath the OVERLAP strip.
+/// Times are UTC to match the strip's frame.
+fn best_window_summary(state: &AppState, total_zones: usize, palette: &Palette) -> (String, Style) {
+    use crate::core::model::WindowTier;
+    match state.model.classified_windows().first() {
+        None => (
+            "Best  no shared window".to_string(),
+            palette.style(Role::Muted),
+        ),
+        Some(w) => {
+            let (tag, role) = match w.tier {
+                WindowTier::Ideal => ("ideal", Role::Good),
+                WindowTier::Feasible => ("feasible", Role::Caution),
+                WindowTier::LeastBad => ("fallback", Role::Muted),
             };
+            let reach = if w.zones_in_window >= total_zones {
+                format!("all {total_zones}")
+            } else {
+                format!("{}/{}", w.zones_in_window, total_zones)
+            };
+            (
+                format!(
+                    "Best  {}–{} UTC · {}m · {reach} · {tag}",
+                    w.start_utc.format("%H:%M"),
+                    w.end_utc.format("%H:%M"),
+                    w.duration_minutes,
+                ),
+                palette.style(role),
+            )
+        }
+    }
+}
 
+/// Map a [`RibbonState`] to its palette [`Role`].
+fn role_for(state: RibbonState) -> Role {
+    match state {
+        RibbonState::Core => Role::Core,
+        RibbonState::Shoulder => Role::Shoulder,
+        RibbonState::Off => Role::Off,
+    }
+}
+
+/// Blur radius, in ribbon columns, applied when sampling state coverage: a
+/// work-window boundary ramps over roughly `2 * this + 1` columns.
+const RIBBON_BLUR_CELLS: f64 = 0.75;
+
+/// Paint one ribbon cell from its per-state coverage counts (Core=0,
+/// Shoulder=1, Off=2).
+///
+/// Truecolor blends the state colours by coverage, so a boundary reads as a
+/// smooth multi-cell gradient. Ansi16 can't blend 16 colours, so it fills with
+/// the dominant state; monochrome maps the mix onto a shade ramp (`░▒▓█`).
+fn draw_ribbon_cell(buffer: &mut Buffer, x: u16, y: u16, counts: [u16; 3], palette: &Palette) {
+    let Some(target) = buffer.cell_mut((x, y)) else {
+        return;
+    };
+    match palette.capability() {
+        Capability::Monochrome => {
+            target.set_char(mono_shade(counts));
+            target.set_style(Style::reset());
+        }
+        Capability::Truecolor => {
+            let (r, g, b) = blend_counts(counts, palette);
+            target.set_char(' ');
+            target.set_style(Style::new().bg(Color::Rgb(r, g, b)));
+        }
+        Capability::Ansi16 => {
+            let st = dominant_state(counts);
+            let named = palette.style(role_for(st)).bg.unwrap_or(Color::Reset);
+            target.set_char(' ');
+            target.set_style(Style::new().bg(named));
+        }
+    }
+}
+
+/// Blend a column's per-state coverage counts into one RGB fill (truecolor).
+fn blend_counts(counts: [u16; 3], palette: &Palette) -> (u8, u8, u8) {
+    let total: f32 = counts.iter().map(|c| f32::from(*c)).sum();
+    if total == 0.0 {
+        return (0, 0, 0);
+    }
+    let mut acc = (0.0f32, 0.0f32, 0.0f32);
+    for st in [RibbonState::Core, RibbonState::Shoulder, RibbonState::Off] {
+        let w = f32::from(counts[st.index()]) / total;
+        let (r, g, b) = palette.role_rgb(role_for(st)).unwrap_or((0, 0, 0));
+        acc.0 += f32::from(r) * w;
+        acc.1 += f32::from(g) * w;
+        acc.2 += f32::from(b) * w;
+    }
+    (acc.0 as u8, acc.1 as u8, acc.2 as u8)
+}
+
+/// The state holding the most coverage (ties resolve Core > Shoulder > Off).
+fn dominant_state(counts: [u16; 3]) -> RibbonState {
+    [RibbonState::Core, RibbonState::Shoulder, RibbonState::Off]
+        .into_iter()
+        .max_by_key(|st| counts[st.index()])
+        .unwrap_or(RibbonState::Off)
+}
+
+/// Monochrome shade for a column: pure states map to `░`/`▓`/`█`, mixes fall on
+/// the ramp (weighting Off=0, Shoulder=1, Core=2) with `▒` as the light step.
+fn mono_shade(counts: [u16; 3]) -> char {
+    let total = f32::from(counts[0] + counts[1] + counts[2]).max(1.0);
+    let level = (f32::from(counts[RibbonState::Shoulder.index()])
+        + f32::from(counts[RibbonState::Core.index()]) * 2.0)
+        / total;
+    if level < 0.34 {
+        '░'
+    } else if level < 0.9 {
+        '▒'
+    } else if level < 1.5 {
+        '▓'
+    } else {
+        '█'
+    }
+}
+
+/// Braille dot height (0..=4) for a column's reach fraction; any reach shows at
+/// least one dot row so the strip never reads empty where a slot is reachable.
+fn braille_height(reach: usize, total: usize) -> u8 {
+    if total == 0 || reach == 0 {
+        return 0;
+    }
+    (reach * 4).div_ceil(total).clamp(1, 4) as u8
+}
+
+/// A braille glyph filled from the bottom up to `height` rows (both dot cols).
+fn braille_bar(height: u8) -> char {
+    let bits: u32 = match height {
+        0 => 0x00,
+        1 => 0xC0,
+        2 => 0xE4,
+        3 => 0xF6,
+        _ => 0xFF,
+    };
+    char::from_u32(0x2800 + bits).unwrap_or(' ')
+}
+
+/// Paint one OVERLAP strip cell as a braille reach-histogram column: dot height
+/// encodes how many zones are reachable, colour encodes the meeting tier.
+fn draw_overlap_cell(
+    buffer: &mut Buffer,
+    x: u16,
+    y: u16,
+    class: MinuteClass,
+    reach_count: usize,
+    total: usize,
+    palette: &Palette,
+) {
+    let Some(target) = buffer.cell_mut((x, y)) else {
+        return;
+    };
+    let height = braille_height(reach_count, total);
+    target.set_char(braille_bar(height));
+    match palette.capability() {
+        Capability::Monochrome => {
+            // No colour: dot height alone carries reach; dim the empty baseline.
+            let style = if height == 0 {
+                Style::new().add_modifier(Modifier::DIM)
+            } else {
+                Style::reset()
+            };
+            target.set_style(style);
+        }
+        _ => {
+            target.set_style(palette.overlap_fg(class, total));
+        }
+    }
+}
+
+fn render_footer(buffer: &mut Buffer, area: Rect, state: &AppState, palette: &Palette) {
+    let [windows_area, inspector_area] =
+        Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(area);
+
+    // --- Best Windows (ranked meeting windows) ---
+    let best_windows_lines: Vec<Line<'static>> = {
+        let windows = state.model.classified_windows();
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        let zone_label = selected_zone_label(state);
+        lines.push(Line::from(Span::styled(
+            format!("Times shown for {zone_label}"),
+            palette.style(Role::Muted),
+        )));
+        if windows.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "No shared windows found",
+                palette.style(Role::Muted),
+            )));
+        }
+        let panel_height = windows_area.height.saturating_sub(2) as usize;
+        let visible_rows = panel_height.saturating_sub(lines.len());
+        for window in windows.iter().take(visible_rows) {
+            let (tier_label, tier_role) = match window.tier {
+                crate::core::model::WindowTier::Ideal => ("● Ideal   ", Role::Good),
+                crate::core::model::WindowTier::Feasible => ("● Feasible", Role::Caution),
+                crate::core::model::WindowTier::LeastBad => ("● Fallback", Role::Muted),
+            };
             let (start_str, end_str) = format_window_times(state, window);
-
             let time_str = if window.tier == crate::core::model::WindowTier::LeastBad {
                 format!(
-                    "{}-{} ({}m, {}/{} zones)",
+                    "{}-{} ({}m, {}/{})",
                     start_str,
                     end_str,
                     window.duration_minutes,
                     window.zones_in_window,
-                    window.total_zones,
+                    window.total_zones
                 )
             } else {
-                format!("{}-{} ({}m)", start_str, end_str, window.duration_minutes,)
+                format!("{}-{} ({}m)", start_str, end_str, window.duration_minutes)
             };
-
             lines.push(Line::from(vec![
-                Span::styled(format!("  {tier_label} "), Style::new().fg(tier_color)),
+                Span::styled(format!("{tier_label} "), palette.style(tier_role)),
                 Span::raw(time_str),
             ]));
         }
-
         lines
     };
-
-    let zone_lines: Vec<Line<'static>> = {
-        let mut lines = Vec::new();
-        // UTC fixed row
-        let utc_offset_label = " (UTC+0)";
-        let is_selected = state.selected_zone == 0;
-        if is_selected {
-            lines.push(Line::from(vec![
-                Span::styled(
-                    UTC_DISPLAY_LABEL.to_string(),
-                    Style::new().on_dark_gray().white(),
-                ),
-                Span::styled(
-                    utc_offset_label.to_string(),
-                    Style::new().on_dark_gray().white().dim(),
-                ),
-            ]));
-        } else {
-            lines.push(Line::from(vec![
-                Span::raw(UTC_DISPLAY_LABEL.to_string()),
-                Span::styled(utc_offset_label.to_string(), Style::new().dim()),
-            ]));
-        }
-        // User zones in display order
-        for (display_idx, &model_idx) in state.display_order.iter().enumerate() {
-            let zone = &state.model.zones[model_idx];
-            let offset_secs = zone.handle.utc_offset_seconds(state.now_utc);
-            let offset_label = format!(
-                " ({})",
-                crate::core::timezones::format_utc_offset_short(offset_secs)
-            );
-            let is_selected = state.selected_zone == display_idx + 1;
-            if is_selected {
-                lines.push(Line::from(vec![
-                    Span::styled(zone.label.clone(), Style::new().on_dark_gray().white()),
-                    Span::styled(offset_label, Style::new().on_dark_gray().white().dim()),
-                ]));
-            } else {
-                lines.push(Line::from(vec![
-                    Span::raw(zone.label.clone()),
-                    Span::styled(offset_label, Style::new().dim()),
-                ]));
-            }
-        }
-        lines
-    };
-
-    let details_lines = details_lines(state);
-
-    Paragraph::new(working_window_lines)
-        .block(panel_block("Working Windows", false))
+    Paragraph::new(best_windows_lines)
+        .block(panel_block("Best Windows", false, palette))
         .wrap(Wrap { trim: true })
         .render(windows_area, buffer);
 
-    {
-        let zones_block = panel_block("Zones", false);
-        let zones_inner = zones_block.inner(zones_area);
-        let panel_inner_height = zones_inner.height as usize;
-        let total_zone_lines = 1 + state.display_order.len(); // UTC + user zones
-
-        // Compute scroll offset to keep selected zone visible
-        let scroll_offset = if state.selected_zone >= panel_inner_height {
-            state.selected_zone - panel_inner_height + 1
-        } else {
-            0
-        };
-
-        let visible_end = (scroll_offset + panel_inner_height).min(zone_lines.len());
-        let visible_lines: Vec<Line<'static>> = zone_lines
-            .into_iter()
-            .skip(scroll_offset)
-            .take(visible_end - scroll_offset)
-            .collect();
-
-        Paragraph::new(visible_lines)
-            .block(zones_block)
-            .render(zones_area, buffer);
-
-        // Scrollbar (only when content overflows)
-        if total_zone_lines > panel_inner_height {
-            let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
-                .begin_symbol(None)
-                .end_symbol(None);
-            let mut scrollbar_state = ScrollbarState::new(total_zone_lines)
-                .position(state.selected_zone)
-                .viewport_content_length(panel_inner_height);
-            StatefulWidget::render(scrollbar, zones_inner, buffer, &mut scrollbar_state);
-        }
+    // --- Cursor inspector ---
+    let lines = inspector_lines(state, palette);
+    let block = panel_block("Cursor Position", false, palette);
+    let inner = block.inner(inspector_area);
+    let panel_inner_height = inner.height as usize;
+    let total = lines.len();
+    let target_row = state.selected_zone + 1; // +1 for the header line
+    let scroll_offset = if panel_inner_height > 0 && target_row >= panel_inner_height {
+        target_row - panel_inner_height + 1
+    } else {
+        0
+    };
+    let visible_end = (scroll_offset + panel_inner_height).min(total);
+    let visible: Vec<Line<'static>> = lines
+        .into_iter()
+        .skip(scroll_offset)
+        .take(visible_end.saturating_sub(scroll_offset))
+        .collect();
+    Paragraph::new(visible)
+        .block(block)
+        .render(inspector_area, buffer);
+    if total > panel_inner_height {
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(None)
+            .end_symbol(None);
+        let mut sb = ScrollbarState::new(total)
+            .position(target_row)
+            .viewport_content_length(panel_inner_height);
+        StatefulWidget::render(scrollbar, inner, buffer, &mut sb);
     }
-
-    Paragraph::new(details_lines)
-        .block(panel_block("Details", false))
-        .wrap(Wrap { trim: true })
-        .render(details_area, buffer);
 }
 
-fn render_controls(buffer: &mut Buffer, area: Rect, state: &AppState) {
-    let key_style = Style::new().cyan().dim();
-    let desc_style = Style::new().dark_gray();
-    let sep = Span::styled("  ", desc_style);
+/// Build the cursor-inspector lines: a header plus one row per zone (UTC first)
+/// showing the exact local time and availability badge at the cursor instant.
+fn inspector_lines(state: &AppState, palette: &Palette) -> Vec<Line<'static>> {
+    let cursor_instant = state
+        .model
+        .timeline_slots
+        .first()
+        .map(|s| s.start_utc + chrono::Duration::minutes(state.cursor_minutes))
+        .unwrap_or(state.model.anchor);
+    let shoulder_minutes = state.session.shoulder_hours * 60;
+    let total = state.model.zones.len();
+    let in_core = state
+        .model
+        .zones
+        .iter()
+        .filter(|z| z.window.contains(z.handle.minute_of_day(cursor_instant)))
+        .count();
 
-    let spans = vec![
-        Span::styled(" Anchor ", key_style),
-        Span::styled(
-            format!("{} UTC", state.model.anchor.format("%Y-%m-%d %H:%M")),
-            desc_style,
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    lines.push(Line::from(Span::styled(
+        format!(
+            "\u{25c6} Cursor {} UTC \u{b7} {in_core}/{total} core",
+            cursor_instant.format("%H:%M")
         ),
-        sep.clone(),
-        Span::styled("Sort:", key_style),
-        Span::styled(format!(" {}", state.sort_mode.label()), desc_style),
-        sep.clone(),
-        Span::styled("h/l", key_style),
-        Span::styled(" scroll", desc_style),
-        sep.clone(),
-        Span::styled("j/k", key_style),
-        Span::styled(" zones", desc_style),
-        sep.clone(),
-        Span::styled("o", key_style),
-        Span::styled(" order", desc_style),
-        sep.clone(),
-        Span::styled("a/x", key_style),
-        Span::styled(" +/-", desc_style),
-        sep.clone(),
-        Span::styled("e", key_style),
-        Span::styled(" edit", desc_style),
-        sep.clone(),
-        Span::styled("s", key_style),
-        Span::styled(" save", desc_style),
-        sep.clone(),
-        Span::styled("?", key_style),
-        Span::styled(" help", desc_style),
-        sep.clone(),
-        Span::styled("q", key_style),
-        Span::styled(" quit", desc_style),
-    ];
+        palette.style(Role::Heading),
+    )));
+
+    // UTC reference row.
+    let utc_label_style = if state.selected_zone == 0 {
+        palette.style(Role::Selected)
+    } else {
+        Style::new()
+    };
+    lines.push(Line::from(vec![
+        Span::styled(format!("{:<18}", "UTC"), utc_label_style),
+        Span::styled(
+            format!(" {}", cursor_instant.format("%H:%M")),
+            Style::new().bold(),
+        ),
+    ]));
+
+    for (display_idx, &model_idx) in state.display_order.iter().enumerate() {
+        let zone = &state.model.zones[model_idx];
+        let local = zone.handle.local_time(cursor_instant);
+        let m = zone.handle.minute_of_day(cursor_instant);
+        let (badge, badge_role) = match ribbon::classify(m, &zone.window, shoulder_minutes) {
+            RibbonState::Core => ("core", Role::Good),
+            RibbonState::Shoulder => ("shldr", Role::Caution),
+            RibbonState::Off => ("off", Role::Muted),
+        };
+        let is_selected = state.selected_zone == display_idx + 1;
+        let label = fit_label(&zone.label, 18);
+        let label_style = if is_selected {
+            palette.style(Role::Selected)
+        } else {
+            Style::new()
+        };
+        lines.push(Line::from(vec![
+            Span::styled(format!("{label:<18}"), label_style),
+            Span::styled(format!(" {} ", local.format("%H:%M")), Style::new().bold()),
+            Span::styled(badge.to_string(), palette.style(badge_role)),
+        ]));
+    }
+    lines
+}
+
+fn render_controls(buffer: &mut Buffer, area: Rect, state: &AppState, palette: &Palette) {
+    let spans = controls_spans(state, palette);
 
     if area.height >= 2 {
-        // Wrapping mode: use Paragraph with Wrap
         let total_chars: usize = spans.iter().map(|s| s.content.chars().count()).sum();
         let char_budget = (area.width as usize) * 2;
-
         let final_spans = if total_chars > char_budget {
-            truncate_spans_with_ellipsis(&spans, char_budget)
+            truncate_spans_with_ellipsis(&spans, char_budget, palette)
         } else {
             spans
         };
-
         Paragraph::new(Line::from(final_spans))
             .wrap(Wrap { trim: true })
             .render(area, buffer);
     } else {
-        // Single line mode
         Paragraph::new(Line::from(spans)).render(area, buffer);
     }
-}
-
-/// Render the minimal controls bar for Micro Mode.
-///
-/// Shows only `? help  q quit` on a single line.
-pub fn render_controls_micro(buffer: &mut Buffer, area: Rect) {
-    let key_style = Style::new().cyan().dim();
-    let desc_style = Style::new().dark_gray();
-
-    let spans = vec![
-        Span::styled(" ?", key_style),
-        Span::styled(" help", desc_style),
-        Span::styled("  ", desc_style),
-        Span::styled("q", key_style),
-        Span::styled(" quit", desc_style),
-    ];
-
-    Paragraph::new(Line::from(spans)).render(area, buffer);
 }
 
 fn selected_zone_label(state: &AppState) -> String {
@@ -1183,79 +904,9 @@ fn format_window_times(
     }
 }
 
-fn details_lines(state: &AppState) -> Vec<Line<'static>> {
-    let mut lines = Vec::new();
-    let label_style = Style::new().dark_gray().bold();
-    let label_width = 8;
-
-    let zone = if state.selected_zone == 0 {
-        None
-    } else {
-        let display_idx = state.selected_zone - 1;
-        state
-            .display_order
-            .get(display_idx)
-            .and_then(|&model_idx| state.model.zones.get(model_idx))
-    };
-
-    if let Some(zone) = zone {
-        lines.push(Line::from(vec![
-            Span::styled(format!("{:<label_width$}", "Zone"), label_style),
-            Span::raw(zone.label.clone()),
-        ]));
-        lines.push(Line::from(vec![
-            Span::styled(format!("{:<label_width$}", "Window"), label_style),
-            Span::raw(format!(
-                "{:02}:{:02}-{:02}:{:02}",
-                zone.window.start_minute / 60,
-                zone.window.start_minute % 60,
-                zone.window.end_minute / 60,
-                zone.window.end_minute % 60
-            )),
-        ]));
-    } else if state.selected_zone == 0 {
-        lines.push(Line::from(vec![
-            Span::styled(format!("{:<label_width$}", "Zone"), label_style),
-            Span::raw(UTC_DISPLAY_LABEL.to_string()),
-        ]));
-    }
-
-    if let Some(slot) = state.model.timeline_slots.get(state.focused_hour) {
-        lines.push(Line::from(vec![
-            Span::styled(format!("{:<label_width$}", "UTC"), label_style),
-            Span::raw(format!("{}", slot.start_utc.format("%Y-%m-%d %H:%M"))),
-        ]));
-        lines.push(Line::from(vec![
-            Span::styled(format!("{:<label_width$}", "Offset"), label_style),
-            Span::raw(format!("{:+}", slot.offset_hours)),
-        ]));
-    }
-
-    if let Some(slot) = state.model.timeline_slots.get(state.focused_hour) {
-        if state.selected_zone == 0 {
-            lines.push(Line::from(vec![
-                Span::styled(format!("{:<label_width$}", "Local"), label_style),
-                Span::raw(format!("{}", slot.start_utc.format("%Y-%m-%d %H:%M"))),
-            ]));
-        } else if let Some(zone) = state
-            .display_order
-            .get(state.selected_zone - 1)
-            .and_then(|&mi| state.model.zones.get(mi))
-        {
-            let local = zone.handle.local_time(slot.start_utc);
-            lines.push(Line::from(vec![
-                Span::styled(format!("{:<label_width$}", "Local"), label_style),
-                Span::raw(format!("{}", local.format("%Y-%m-%d %H:%M"))),
-            ]));
-        }
-    }
-
-    lines
-}
-
-fn render_help(buffer: &mut Buffer, area: Rect) {
-    let key_style = Style::new().cyan().dim();
-    let desc_style = Style::new().gray();
+fn render_help(buffer: &mut Buffer, area: Rect, palette: &Palette) {
+    let key_style = palette.style(Role::KeyHint);
+    let desc_style = palette.style(Role::Label);
 
     let key_col: usize = 14; // width for the key column
     let indent = "  ";
@@ -1263,21 +914,32 @@ fn render_help(buffer: &mut Buffer, area: Rect) {
     let mut lines: Vec<Line> = Vec::new();
 
     // --- Navigation ---
-    lines.push(Line::from(" Navigation".cyan().bold()));
+    lines.push(Line::from(Span::styled(
+        " Navigation",
+        palette.style(Role::Heading),
+    )));
     lines.push(Line::from(vec![
         Span::raw(indent),
         Span::styled(format!("{:<key_col$}", "\u{2190}/\u{2192}  h/l"), key_style),
-        Span::styled("Move hour cursor", desc_style),
+        Span::styled("Move cursor (\u{00bd} hour)", desc_style),
     ]));
     lines.push(Line::from(vec![
         Span::raw(indent),
         Span::styled(format!("{:<key_col$}", "\u{2191}/\u{2193}  j/k"), key_style),
         Span::styled("Move zone cursor", desc_style),
     ]));
+    lines.push(Line::from(vec![
+        Span::raw(indent),
+        Span::styled(format!("{:<key_col$}", "n"), key_style),
+        Span::styled("Jump cursor to now", desc_style),
+    ]));
     lines.push(Line::from(""));
 
     // --- Zone Management ---
-    lines.push(Line::from(" Zone Management".cyan().bold()));
+    lines.push(Line::from(Span::styled(
+        " Zone Management",
+        palette.style(Role::Heading),
+    )));
     lines.push(Line::from(vec![
         Span::raw(indent),
         Span::styled(format!("{:<key_col$}", "a"), key_style),
@@ -1306,7 +968,10 @@ fn render_help(buffer: &mut Buffer, area: Rect) {
     lines.push(Line::from(""));
 
     // --- General ---
-    lines.push(Line::from(" General".cyan().bold()));
+    lines.push(Line::from(Span::styled(
+        " General",
+        palette.style(Role::Heading),
+    )));
     lines.push(Line::from(vec![
         Span::raw(indent),
         Span::styled(format!("{:<key_col$}", "s"), key_style),
@@ -1325,21 +990,20 @@ fn render_help(buffer: &mut Buffer, area: Rect) {
     lines.push(Line::from(""));
 
     // --- Dismiss hint ---
-    lines.push(Line::from(
-        "                          Esc or ? to close "
-            .dark_gray()
-            .dim(),
-    ));
+    lines.push(Line::from(Span::styled(
+        "                          Esc or ? to close ",
+        palette.style(Role::Muted),
+    )));
 
     let content_height = lines.len() as u16 + 2; // +2 for borders
     let popup = centered_rect(area, 48, content_height);
     Clear.render(popup, buffer);
     Paragraph::new(lines)
-        .block(Block::bordered().title(" Help ".cyan()))
+        .block(Block::bordered().title(Span::styled(" Help ", palette.style(Role::Heading))))
         .render(popup, buffer);
 }
 
-fn render_modal(buffer: &mut Buffer, area: Rect, state: &AppState) {
+fn render_modal(buffer: &mut Buffer, area: Rect, state: &AppState, palette: &Palette) {
     let Some(modal) = &state.modal else {
         return;
     };
@@ -1359,6 +1023,7 @@ fn render_modal(buffer: &mut Buffer, area: Rect, state: &AppState) {
             filtered,
             *selected,
             *scroll_offset,
+            palette,
         ),
         Modal::EditWindow {
             zone_index,
@@ -1377,6 +1042,7 @@ fn render_modal(buffer: &mut Buffer, area: Rect, state: &AppState) {
             *start_scroll_offset,
             *end_selected,
             *end_scroll_offset,
+            palette,
         ),
     }
 }
@@ -1392,6 +1058,7 @@ fn render_edit_window(
     start_scroll_offset: usize,
     end_selected: usize,
     end_scroll_offset: usize,
+    palette: &Palette,
 ) {
     use crate::tui::forms::{Pane, TIME_SLOTS, format_time_slot};
 
@@ -1431,10 +1098,10 @@ fn render_edit_window(
     let end_pane_x = start_pane_x + pane_width + gap;
 
     let (active_border_style, inactive_border_style) =
-        (Style::new().cyan(), Style::new().dark_gray());
+        (palette.style(Role::Heading), palette.style(Role::Muted));
     let (active_highlight, inactive_highlight) = (
-        Style::new().on_cyan().black(),
-        Style::new().on_dark_gray().white(),
+        palette.style(Role::SelectedActive),
+        palette.style(Role::Selected),
     );
 
     let is_start_active = *active_pane == Pane::Start;
@@ -1572,7 +1239,8 @@ fn render_edit_window(
             overnight,
         );
         let summary_area = Rect::new(inner.x + 1, summary_y, inner.width.saturating_sub(2), 1);
-        Paragraph::new(Span::styled(summary, Style::new().yellow())).render(summary_area, buffer);
+        Paragraph::new(Span::styled(summary, palette.style(Role::Caution)))
+            .render(summary_area, buffer);
     }
 
     // Hints line
@@ -1580,19 +1248,20 @@ fn render_edit_window(
     if hints_y < inner.y + inner.height {
         let hints_area = Rect::new(inner.x + 1, hints_y, inner.width.saturating_sub(2), 1);
         Paragraph::new(Line::from(vec![
-            "Tab".cyan(),
-            " switch pane  ".dark_gray(),
-            "\u{2191}\u{2193}/jk".cyan(),
-            " scroll  ".dark_gray(),
-            "Enter".cyan(),
-            " submit  ".dark_gray(),
-            "Esc".cyan(),
-            " cancel".dark_gray(),
+            Span::styled("Tab", palette.style(Role::KeyHint)),
+            Span::styled(" switch pane  ", palette.style(Role::Muted)),
+            Span::styled("\u{2191}\u{2193}/jk", palette.style(Role::KeyHint)),
+            Span::styled(" scroll  ", palette.style(Role::Muted)),
+            Span::styled("Enter", palette.style(Role::KeyHint)),
+            Span::styled(" submit  ", palette.style(Role::Muted)),
+            Span::styled("Esc", palette.style(Role::KeyHint)),
+            Span::styled(" cancel", palette.style(Role::Muted)),
         ]))
         .render(hints_area, buffer);
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_add_zone_picker(
     buffer: &mut Buffer,
     area: Rect,
@@ -1601,6 +1270,7 @@ fn render_add_zone_picker(
     filtered: &[usize],
     selected: usize,
     mut scroll_offset: usize,
+    palette: &Palette,
 ) {
     let popup_height = (area.height * 70 / 100)
         .max(12)
@@ -1635,7 +1305,7 @@ fn render_add_zone_picker(
         ""
     };
     Paragraph::new(Line::from(vec![
-        "> ".cyan(),
+        Span::styled("> ", palette.style(Role::KeyHint)),
         Span::raw(input),
         Span::styled(
             if placeholder.is_empty() {
@@ -1643,7 +1313,7 @@ fn render_add_zone_picker(
             } else {
                 placeholder
             },
-            Style::new().dark_gray(),
+            palette.style(Role::Muted),
         ),
     ]))
     .render(filter_area, buffer);
@@ -1651,7 +1321,7 @@ fn render_add_zone_picker(
     // Separator line
     let sep_area = Rect::new(inner.x, inner.y + 1, inner.width, 1);
     let sep: String = "─".repeat(inner.width as usize);
-    Paragraph::new(Span::styled(&*sep, Style::new().dark_gray())).render(sep_area, buffer);
+    Paragraph::new(Span::styled(&*sep, palette.style(Role::Muted))).render(sep_area, buffer);
 
     // List area
     let list_area_y = inner.y + 2;
@@ -1664,7 +1334,7 @@ fn render_add_zone_picker(
         let is_selected = list_index == selected;
 
         let style = if is_selected {
-            Style::new().on_cyan().black()
+            palette.style(Role::SelectedActive)
         } else {
             Style::new()
         };
@@ -1693,10 +1363,13 @@ fn render_add_zone_picker(
         let hint_area = Rect::new(inner.x, hint_y, inner.width, 1);
         let match_count = filtered.len();
         Paragraph::new(Line::from(vec![
-            Span::styled(format!("{match_count} matches  "), Style::new().dark_gray()),
+            Span::styled(
+                format!("{match_count} matches  "),
+                palette.style(Role::Muted),
+            ),
             Span::styled(
                 "↑↓ navigate  Enter select  Esc cancel",
-                Style::new().dark_gray(),
+                palette.style(Role::Muted),
             ),
         ]))
         .render(hint_area, buffer);
@@ -1729,160 +1402,11 @@ fn centered_rect(area: Rect, width: u16, height: u16) -> Rect {
     )
 }
 
-fn panel_block(title: &'static str, focused: bool) -> Block<'static> {
+fn panel_block(title: &'static str, focused: bool, palette: &Palette) -> Block<'static> {
     let style = if focused {
-        Style::new().cyan()
+        palette.style(Role::Heading)
     } else {
         Style::new()
     };
     Block::bordered().title(Span::styled(title, style))
-}
-
-fn overlaps_slot(state: &AppState, slot_index: usize) -> bool {
-    let Some(slot) = state.model.timeline_slots.get(slot_index) else {
-        return false;
-    };
-
-    state
-        .model
-        .overlap_segments
-        .iter()
-        .any(|segment| slot.start_utc >= segment.start_utc && slot.start_utc < segment.end_utc)
-}
-
-/// Input for computing a timeline cell's style.
-///
-/// `in_window` takes priority over `in_shoulder` — if both are true, the cell
-/// is treated as in-window (green). Callers should set at most one of these,
-/// but the precedence is defined here for safety.
-#[derive(Clone, Copy, Default)]
-struct CellStyleInput {
-    /// True if the slot's local time falls inside the zone's work window.
-    in_window: bool,
-    /// True if the slot's local time falls in the shoulder zone.
-    in_shoulder: bool,
-    /// True if this column is a mutual-overlap column (all zones' windows overlap).
-    is_overlap: bool,
-    /// True if this cell is in the selected zone's row.
-    zone_selected: bool,
-    /// True if this cell is in the UTC header row (no color coding).
-    is_header: bool,
-}
-
-/// Compute the `Style` for a single timeline cell.
-///
-/// Style layering:
-/// 1. Work-window foreground (green/amber/red) — skipped for header
-/// 2. Overlap underline
-/// 3. Selected-zone bold (or header bold)
-fn cell_style(input: &CellStyleInput) -> Style {
-    let mut style = Style::new();
-
-    // Layer 1: work-window foreground (not for headers)
-    if !input.is_header {
-        style = style.fg(if input.in_window {
-            Color::Green
-        } else if input.in_shoulder {
-            Color::Yellow
-        } else {
-            Color::Red
-        });
-    }
-
-    // Layer 2: overlap underline
-    if input.is_overlap {
-        style = style.underlined();
-    }
-
-    // Layer 3: selected zone bold OR header bold
-    if input.zone_selected || input.is_header {
-        style = style.bold();
-    }
-
-    style
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use ratatui::style::{Color, Modifier};
-
-    #[test]
-    fn cell_style_green_for_in_window() {
-        let style = cell_style(&CellStyleInput {
-            in_window: true,
-            ..Default::default()
-        });
-        assert_eq!(style.fg, Some(Color::Green));
-    }
-
-    #[test]
-    fn cell_style_yellow_for_shoulder() {
-        let style = cell_style(&CellStyleInput {
-            in_shoulder: true,
-            ..Default::default()
-        });
-        assert_eq!(style.fg, Some(Color::Yellow));
-    }
-
-    #[test]
-    fn cell_style_red_for_outside() {
-        let style = cell_style(&CellStyleInput::default());
-        assert_eq!(style.fg, Some(Color::Red));
-    }
-
-    #[test]
-    fn cell_style_overlap_adds_underline() {
-        let style = cell_style(&CellStyleInput {
-            in_window: true,
-            is_overlap: true,
-            ..Default::default()
-        });
-        assert!(style.add_modifier.contains(Modifier::UNDERLINED));
-        assert_eq!(style.fg, Some(Color::Green));
-    }
-
-    #[test]
-    fn cell_style_selected_zone_adds_bold() {
-        let style = cell_style(&CellStyleInput {
-            in_window: true,
-            zone_selected: true,
-            ..Default::default()
-        });
-        assert!(style.add_modifier.contains(Modifier::BOLD));
-    }
-
-    #[test]
-    fn cell_style_header_has_no_color_but_keeps_bold() {
-        let style = cell_style(&CellStyleInput {
-            is_header: true,
-            ..Default::default()
-        });
-        assert_eq!(style.fg, None);
-        assert!(style.add_modifier.contains(Modifier::BOLD));
-    }
-
-    #[test]
-    fn cell_style_header_overlap_gets_underline() {
-        let style = cell_style(&CellStyleInput {
-            is_header: true,
-            is_overlap: true,
-            ..Default::default()
-        });
-        assert!(style.add_modifier.contains(Modifier::UNDERLINED));
-        assert!(style.add_modifier.contains(Modifier::BOLD));
-    }
-
-    #[test]
-    fn cell_style_all_modifiers_combine() {
-        let style = cell_style(&CellStyleInput {
-            in_window: true,
-            is_overlap: true,
-            zone_selected: true,
-            ..Default::default()
-        });
-        assert_eq!(style.fg, Some(Color::Green));
-        assert!(style.add_modifier.contains(Modifier::UNDERLINED));
-        assert!(style.add_modifier.contains(Modifier::BOLD));
-    }
 }

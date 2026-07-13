@@ -8,6 +8,10 @@
 pub mod app;
 /// Modal dialog data types, timezone picker entries, and time-slot helpers.
 pub mod forms;
+/// Color-capability detection and semantic role → style mapping.
+pub mod palette;
+/// Pure ribbon logic: state classification, overlap aggregation, cell packing.
+pub mod ribbon;
 /// Application state machine managing focus, zones, sort order, and modals.
 pub mod state;
 /// Rendering functions that paint the UI into a ratatui `Buffer`.
