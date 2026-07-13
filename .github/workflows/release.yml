@@ -139,12 +139,31 @@ jobs:
             artifacts/checksums.txt
 
       - name: Set up VHS
-        uses: charmbracelet/vhs-action@v2
-        with:
-          install-fonts: true
+        id: vhs_setup
+        continue-on-error: true
+        env:
+          VHS_VERSION: "0.11.0"
+          TTYD_VERSION: "1.7.7"
+        run: |
+          set -euxo pipefail
+          # ffmpeg and the VHS default font from apt; ttyd and vhs as pinned binaries.
+          for i in 1 2 3; do sudo apt-get update && break || sleep 5; done
+          sudo apt-get install -y --no-install-recommends ffmpeg fonts-jetbrains-mono
+          curl --retry 3 --retry-delay 5 -fsSL -o /tmp/ttyd \
+            "https://github.com/tsl0922/ttyd/releases/download/${TTYD_VERSION}/ttyd.x86_64"
+          sudo install -m 0755 /tmp/ttyd /usr/local/bin/ttyd
+          curl --retry 3 --retry-delay 5 -fsSL -o /tmp/vhs.tar.gz \
+            "https://github.com/charmbracelet/vhs/releases/download/v${VHS_VERSION}/vhs_${VHS_VERSION}_Linux_x86_64.tar.gz"
+          mkdir -p /tmp/vhs-dl && tar -xzf /tmp/vhs.tar.gz -C /tmp/vhs-dl
+          sudo install -m 0755 "$(find /tmp/vhs-dl -type f -name vhs | head -n1)" /usr/local/bin/vhs
+          # Verify each tool resolves on PATH.
+          ffmpeg -version | head -n1
+          ttyd --version
+          vhs --version
 
       - name: Refresh Demo GIFs
         id: refresh_gifs
+        if: steps.vhs_setup.outcome == 'success'
         continue-on-error: true
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
@@ -167,7 +186,7 @@ jobs:
           git diff --cached --quiet || git commit -m "chore(release): refresh demo GIFs for v${VERSION}"
 
       - name: Warn if demo GIF refresh failed
-        if: steps.refresh_gifs.outcome == 'failure'
+        if: steps.vhs_setup.outcome == 'failure' || steps.refresh_gifs.outcome == 'failure'
         run: |
           echo "::warning title=Demo GIF refresh failed::VHS could not regenerate the demo GIFs for ${GITHUB_REF_NAME}; assets/*.gif may be stale. Re-run 'vhs tapes/*.tape' locally and commit the result."
 
