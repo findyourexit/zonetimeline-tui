@@ -4,8 +4,7 @@
 
 # Zone Timeline (TUI)
 
-[![CI Status](https://github.com/findyourexit/figgit/workflows/CI/badge.svg)](https://github.com/findyourexit/zonetimeline-tui/actions)
-[![Test Coverage](https://img.shields.io/badge/coverage-89.02%25-brightgreen)](https://github.com/findyourexit/zonetimeline-tui)
+[![CI Status](https://github.com/findyourexit/zonetimeline-tui/workflows/CI/badge.svg)](https://github.com/findyourexit/zonetimeline-tui/actions)
 [![Release](https://img.shields.io/github/v/release/findyourexit/zonetimeline-tui)](https://github.com/findyourexit/zonetimeline-tui/releases)
 [![License](https://img.shields.io/github/license/findyourexit/zonetimeline-tui)](https://opensource.org/licenses/MIT)
 
@@ -16,7 +15,7 @@ without mental arithmetic, and manage your zone list interactively. Ships as a
 single binary with both a rich TUI and a plain-text mode for scripts and pipes.
 
 <p align="center">
-  <img src="assets/demo.gif" alt="Zone Timeline TUI demo" width="800" />
+  <img src="assets/demo.gif" alt="Zone Timeline TUI — live timeline with gradient ribbons, cursor, now marker and overlap histogram" width="800" />
 </p>
 
 ## Quick Start
@@ -92,35 +91,53 @@ ztl list
 - `--width` sets the output width in columns.
 - `--shoulder-hours` controls how many hours outside the work window are marked as shoulder time (default: 1).
 
-### Compact Mode
+### The Timeline View
 
 <p align="center">
-  <img src="assets/demo-compact-mode.gif" alt="Zone Timeline TUI compact mode demo" width="800" />
+  <img src="assets/timeline.gif" alt="Moving the 30-minute cursor updates the At-cursor inspector; ▼ marks now" width="800" />
 </p>
 
-Compact Mode kicks in automatically when the terminal width drops below the
-full layout threshold. It condenses the timeline while preserving all zone
-rows, work-window shading, and keyboard navigation — ideal for split panes,
-tiling window managers, or narrower displays.
+Each zone is shown as a continuous **availability ribbon** rather than a grid of
+numbers:
 
-### Micro Mode
+- Every minute is one of three states: **Core** work hours, **shoulder** time
+  (±`--shoulder-hours`), or **Off**-hours — each with its own colour (and a
+  distinct shade character in monochrome). A one-line **legend** in the header
+  spells out the colours and markers, so nothing needs memorising.
+- An **Overlap** strip beneath the ribbons shows when people are mutually
+  available, drawn as a braille histogram whose dot height reflects how many
+  zones are reachable. A summary line names the
+  best meeting window inline — its UTC time, length, reach (e.g. `4/6`), and tier
+  (*ideal* / *feasible* / *fallback*).
+- A movable **cursor** (`◆`, 30-minute steps) drives the **At cursor** inspector,
+  which lists the exact local time and status for every zone at that instant; a
+  separate `▼` marker tracks **now**.
 
-<p align="center">
-  <img src="assets/demo-micro-mode.gif" alt="Zone Timeline TUI micro mode demo" width="800" />
-</p>
+Rendering adapts to your terminal's colour support: 24-bit truecolour, falling
+back to 16-colour, then to monochrome block shading.
 
-Micro Mode activates automatically when the terminal size is very small,
-providing a streamlined layout optimised for mobile handsets and other
-constrained terminal environments. It retains core functionality — zone
-comparison, hour navigation, and work-window visibility — while fitting
-comfortably in minimal screen real estate.
+### Responsive Layout
+
+The timeline **scales to fill the available width** — widen the pane and each
+column covers a finer slice of time (the hour axis gains detail); narrow it and
+each column covers more. At typical widths a column spans well under 30 minutes.
+When there are more zones than vertical space, the rows **scroll** and a
+scrollbar appears.
+
+Below **80×24** the tool shows a resize prompt — that is the minimum size for a
+legible render.
 
 ## TUI Controls
 
+<p align="center">
+  <img src="assets/manage.gif" alt="Adding a zone, focusing it, editing its work window, and removing it" width="800" />
+</p>
+
 | Key                                                             | Action                      |
 |-----------------------------------------------------------------|-----------------------------|
-| <kbd>Left</kbd> / <kbd>Right</kbd>, <kbd>h</kbd> / <kbd>l</kbd> | Move hour focus             |
+| <kbd>Left</kbd> / <kbd>Right</kbd>, <kbd>h</kbd> / <kbd>l</kbd> | Move cursor (30-min steps)  |
 | <kbd>Up</kbd> / <kbd>Down</kbd>, <kbd>j</kbd> / <kbd>k</kbd>    | Move zone focus             |
+| <kbd>n</kbd>                                                    | Jump cursor to now          |
 | <kbd>a</kbd>                                                    | Add zone                    |
 | <kbd>x</kbd>                                                    | Remove zone                 |
 | <kbd>J</kbd> / <kbd>K</kbd>                                     | Reorder zone                |
@@ -161,6 +178,19 @@ Zone merging follows per-field precedence:
 cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test
+```
+
+### Regenerating the demo GIFs
+
+The demo GIFs are recorded with [VHS](https://github.com/charmbracelet/vhs)
+from the tapes in [`tapes/`](tapes). With `vhs`, `ttyd` and `ffmpeg` on your
+PATH, run from the repo root:
+
+```bash
+cargo build --release
+vhs tapes/demo.tape      # hero            -> assets/demo.gif
+vhs tapes/timeline.tape  # timeline view   -> assets/timeline.gif
+vhs tapes/manage.tape    # zone management -> assets/manage.gif
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for more details.
