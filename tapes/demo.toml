@@ -1,0 +1,20 @@
+# Demo config used by the VHS tapes (tapes/demo.tape, tapes/timeline.tape).
+#
+# It isolates the recordings from whatever zone list you keep in your real
+# config dir and pins the zones shown in the README GIFs. The anchor is left
+# unset so the timeline tracks "now" (and renders the v marker).
+
+[general]
+zones = [
+  "America/Los_Angeles",
+  "America/New_York",
+  "Europe/London",
+  "Europe/Berlin",
+  "Asia/Kolkata",
+  "Australia/Sydney",
+]
+nhours = 24
+
+[overlap]
+default_window = "09:00-17:00"
+shoulder_hours = 1

@@ -1,0 +1,11 @@
+# Config for the zone-management demo (tapes/manage.tape). Small and isolated
+# so the add / reorder / edit / remove flow is easy to follow. The tape adds
+# Asia/Tokyo, so it is deliberately absent here.
+
+[general]
+zones = ["America/New_York", "Europe/London", "Asia/Kolkata"]
+nhours = 24
+
+[overlap]
+default_window = "09:00-17:00"
+shoulder_hours = 1
