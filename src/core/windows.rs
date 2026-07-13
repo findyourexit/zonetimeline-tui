@@ -76,10 +76,13 @@ impl WorkWindow {
 
         // Distance before start (circular)
         let before_start = ((start - m) % day + day) % day;
-        // Distance after end (circular)
+        // Right shoulder is half-open [end, end + sh) so it sits flush against
+        // core's [start, end) with no 1-minute hole at `end` (a whole hour);
+        // `after_end` is a non-negative circular distance, so `< sh` bounds it.
         let after_end = ((m - end) % day + day) % day;
 
-        (before_start > 0 && before_start <= sh) || (after_end > 0 && after_end <= sh)
+        // Left shoulder = [start - sh, start)  →  before_start in 1..=sh.
+        (before_start > 0 && before_start <= sh) || after_end < sh
     }
 }
 
@@ -158,6 +161,21 @@ mod tests {
     fn zero_shoulder_means_no_shoulder() {
         assert!(!normal_window().shoulder_contains(480, 0));
         assert!(!normal_window().shoulder_contains(1050, 0));
+    }
+
+    #[test]
+    fn end_boundary_is_shoulder_not_a_gap() {
+        // Core is [start, end); the exact end minute (17:00 = 1020) is not core,
+        // so it must be shoulder — otherwise it falls through to a 1-minute
+        // Off hole between core and shoulder (the ribbon "gap" at whole hours).
+        let w = normal_window();
+        assert!(!w.contains(1020));
+        assert!(w.shoulder_contains(1020, 60));
+        // The shoulder is half-open [end, end + sh): end + sh (18:00) is off.
+        assert!(!w.shoulder_contains(1080, 60));
+        // ...and it remains flush against core just inside the boundary.
+        assert!(w.contains(1019));
+        assert!(w.shoulder_contains(1079, 60));
     }
 
     #[test]
