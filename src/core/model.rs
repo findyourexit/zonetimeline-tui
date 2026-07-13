@@ -339,11 +339,22 @@ fn build_timeline_slots(
     anchor_spec: &AnchorSpec,
 ) -> Vec<TimelineSlot> {
     let start_offset = -(i32::from(nhours) / 2);
-    // Truncate anchor to the start of its minute for clean alignment
-    let anchor_instant = anchor
-        .with_second(0)
-        .and_then(|value| value.with_nanosecond(0))
-        .unwrap();
+    let anchor_instant = match anchor_spec {
+        // "Now" is fuzzy: align the grid to the start of the hour so columns,
+        // axis labels, the cursor's 30-minute steps and the ▼ marker all land on
+        // round times. The exact live instant is preserved via the offset-0
+        // slot's `current_minute_offset` (the ▼ marker), below.
+        AnchorSpec::Now => anchor
+            .with_minute(0)
+            .and_then(|value| value.with_second(0))
+            .and_then(|value| value.with_nanosecond(0))
+            .unwrap(),
+        // An explicit `--time` is a precise request — honour it to the minute.
+        AnchorSpec::Explicit(_) => anchor
+            .with_second(0)
+            .and_then(|value| value.with_nanosecond(0))
+            .unwrap(),
+    };
 
     (0..usize::from(nhours))
         .map(|index| {
