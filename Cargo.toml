@@ -1,8 +1,8 @@
 [package]
 name = "zonetimeline-tui"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 description = "A terminal tool for visually comparing time zones"
 authors = ["Tom Larcher <tom.larcher@gmail.com>"]
 license = "MIT"
