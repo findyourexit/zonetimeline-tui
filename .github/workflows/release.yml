@@ -138,6 +138,39 @@ jobs:
             artifacts/ztl-*
             artifacts/checksums.txt
 
+      - name: Set up VHS
+        uses: charmbracelet/vhs-action@v2
+        with:
+          install-fonts: true
+
+      - name: Refresh Demo GIFs
+        id: refresh_gifs
+        continue-on-error: true
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          # Regenerate the README demos against the released binary, on main.
+          git checkout main
+          # The tapes expect the binary at target/release/ztl; reuse the Linux
+          # release artifact instead of recompiling it here.
+          mkdir -p target/release
+          tar -xzf "artifacts/ztl-${VERSION}-x86_64-unknown-linux-gnu.tar.gz" -C artifacts
+          cp "artifacts/ztl-${VERSION}-x86_64-unknown-linux-gnu/ztl" target/release/ztl
+          chmod +x target/release/ztl
+          # Each tape isolates config and forces truecolour internally.
+          for tape in tapes/demo.tape tapes/timeline.tape tapes/manage.tape; do
+            vhs "$tape"
+          done
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add assets/demo.gif assets/timeline.gif assets/manage.gif
+          # Committed here; the Promote Changelog step below pushes it to main.
+          git diff --cached --quiet || git commit -m "chore(release): refresh demo GIFs for v${VERSION}"
+
+      - name: Warn if demo GIF refresh failed
+        if: steps.refresh_gifs.outcome == 'failure'
+        run: |
+          echo "::warning title=Demo GIF refresh failed::VHS could not regenerate the demo GIFs for ${GITHUB_REF_NAME}; assets/*.gif may be stale. Re-run 'vhs tapes/*.tape' locally and commit the result."
+
       - name: Promote Changelog
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
