@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- A full-screen **world map** view: press `m` to toggle between the timeline and the map, or launch straight into it with `ztl --map`. Every configured zone is plotted on a Unicode-braille Web-Mercator projection that reflows with the terminal, coloured by the same core / shoulder / off availability as the timeline and driven by the shared cursor instant. A shaded day/night hemisphere with a solar terminator tracks the cursor so you can see at a glance who is awake, the focused zone is highlighted (`◉`) with its local time on a status line, and UTC / fixed-offset zones sit on the equator at their offset longitude with a distinct hollow marker. Coastlines are bundled from Natural Earth and per-zone coordinates from the IANA time zone database, so the build stays offline and dependency-free.
+- The map keeps a correct aspect ratio at any terminal size, tiling the world horizontally to fill surplus width (the projection wraps like a cylinder) and letterboxing surplus height.
+- A `default_view` option in the config's `[general]` section (alongside the `--map` flag) to choose whether the TUI opens on the timeline or the map; saving in the TUI (`s`) persists whichever view you are in.
+
 ## [0.3.0] - 2026-07-13
 
 ### Changed
