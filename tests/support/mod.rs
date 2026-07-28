@@ -22,5 +22,6 @@ pub fn fixture_seed() -> SessionSeed {
         work_hours: BTreeMap::new(),
         shoulder_hours: 1,
         sort_mode: SortMode::default(),
+        default_view: Default::default(),
     }
 }

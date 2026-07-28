@@ -17,7 +17,7 @@ use chrono::{DateTime, Utc};
 
 use crate::config::save_session;
 use crate::core::model::{
-    AnchorSpec, ComparisonModel, SessionConfig, SortMode, compute_display_order,
+    AnchorSpec, ComparisonModel, SessionConfig, SortMode, ViewMode, compute_display_order,
 };
 use crate::core::timezones::parse_zone;
 use crate::tui::forms::{Modal, Pane, TIME_SLOTS, build_picker_entries, refilter};
@@ -44,6 +44,8 @@ pub struct AppState {
     /// until `save()` is called, which patches the session before writing.
     pub sort_mode: SortMode,
     pub display_order: Vec<usize>,
+    /// Which top-level view is shown (timeline or world map).
+    pub view: ViewMode,
 }
 
 impl AppState {
@@ -60,6 +62,7 @@ impl AppState {
         let cursor_minutes = (anchor_slot as i64) * 60;
 
         let sort_mode = model.session().sort_mode;
+        let view = model.session().default_view;
         let display_order = compute_display_order(&model.zones, sort_mode, now_utc);
 
         Self {
@@ -73,6 +76,7 @@ impl AppState {
             modal: None,
             sort_mode,
             display_order,
+            view,
         }
     }
 
@@ -96,6 +100,24 @@ impl AppState {
         }
 
         Ok(())
+    }
+
+    /// The absolute UTC instant the cursor currently points at.
+    ///
+    /// Shared by the timeline inspector and the world map so both read the
+    /// same moment.
+    pub fn cursor_instant(&self) -> DateTime<Utc> {
+        self.model
+            .timeline_slots
+            .first()
+            .map(|slot| slot.start_utc + chrono::Duration::minutes(self.cursor_minutes))
+            .unwrap_or(self.model.anchor)
+    }
+
+    /// Toggle between the timeline and world-map views.
+    pub fn toggle_view(&mut self) {
+        self.view = self.view.toggle();
+        self.status = None;
     }
 
     /// Maximum cursor minute offset (start of the last step-wide column).
@@ -604,6 +626,7 @@ impl AppState {
     pub fn save(&self) -> Result<()> {
         let mut session = self.session.clone();
         session.sort_mode = self.sort_mode;
+        session.default_view = self.view;
         save_session(&session)
     }
 

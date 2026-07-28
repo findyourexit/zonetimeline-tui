@@ -21,7 +21,7 @@ use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 
 use crate::cli::Cli;
-use crate::core::model::SortMode;
+use crate::core::model::{SortMode, ViewMode};
 
 /// Fallback zone list when neither CLI nor config supplies one.
 pub const DEFAULT_ZONES: [&str; 3] = ["local", "America/New_York", "Europe/London"];
@@ -146,6 +146,8 @@ pub struct GeneralConfig {
     pub plain: bool,
     /// Zone sort strategy.
     pub sort_mode: Option<SortMode>,
+    /// View the TUI opens in (`timeline` or `map`); `None` uses the default.
+    pub default_view: Option<ViewMode>,
 }
 
 /// `[overlap]` section -- controls work-window highlighting.
@@ -205,6 +207,8 @@ pub struct SessionSeed {
     pub shoulder_hours: u16,
     /// How zones are sorted in the display.
     pub sort_mode: SortMode,
+    /// View the TUI opens in (timeline or map).
+    pub default_view: ViewMode,
 }
 
 /// Return the default work-window string.
@@ -290,6 +294,7 @@ pub fn save_session(session: &crate::core::model::SessionConfig) -> Result<()> {
             width: session.width,
             plain: session.plain,
             sort_mode: Some(session.sort_mode),
+            default_view: Some(session.default_view),
         },
         overlap: OverlapConfig {
             default_window: session.default_window.clone(),
@@ -382,5 +387,10 @@ pub fn merge_with_cli(cli: &Cli, file: FileConfig, source: ConfigSource) -> Sess
         work_hours: file.overlap.work_hours,
         shoulder_hours: cli.shoulder_hours.unwrap_or(file.overlap.shoulder_hours),
         sort_mode: file.general.sort_mode.unwrap_or_default(),
+        default_view: if cli.map {
+            ViewMode::Map
+        } else {
+            file.general.default_view.unwrap_or_default()
+        },
     }
 }

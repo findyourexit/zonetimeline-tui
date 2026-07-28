@@ -63,6 +63,27 @@ impl SortMode {
     }
 }
 
+/// Which top-level TUI screen is shown.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ViewMode {
+    /// The heat-ribbon timeline (default).
+    #[default]
+    Timeline,
+    /// The world map.
+    Map,
+}
+
+impl ViewMode {
+    /// Toggle between the timeline and the world map.
+    pub fn toggle(self) -> Self {
+        match self {
+            Self::Timeline => Self::Map,
+            Self::Map => Self::Timeline,
+        }
+    }
+}
+
 /// Specifies where the timeline is anchored: live (`Now`) or a fixed time.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AnchorSpec {
@@ -112,6 +133,8 @@ pub struct SessionConfig {
     pub shoulder_hours: u16,
     /// Current row sort order.
     pub sort_mode: SortMode,
+    /// Which view the TUI opens in (timeline or map).
+    pub default_view: ViewMode,
 }
 
 /// A timezone entry fully resolved and ready for bitmap computation.
@@ -274,6 +297,7 @@ impl From<SessionSeed> for SessionConfig {
             work_hours: seed.work_hours,
             shoulder_hours: seed.shoulder_hours,
             sort_mode: seed.sort_mode,
+            default_view: seed.default_view,
         }
     }
 }

@@ -154,6 +154,7 @@ fn refresh_now_updates_wall_clock_and_live_anchor_model() {
                 work_hours: Default::default(),
                 shoulder_hours: 1,
                 sort_mode: SortMode::default(),
+                default_view: Default::default(),
             },
             now,
         )
@@ -195,6 +196,7 @@ fn refresh_now_updates_wall_clock_without_moving_explicit_anchor() {
                 work_hours: Default::default(),
                 shoulder_hours: 1,
                 sort_mode: SortMode::default(),
+                default_view: Default::default(),
             },
             now,
         )
@@ -228,6 +230,7 @@ fn refresh_now_rebuilds_explicit_anchor_when_utc_date_rolls_over() {
                 work_hours: Default::default(),
                 shoulder_hours: 1,
                 sort_mode: SortMode::default(),
+                default_view: Default::default(),
             },
             now,
         )
@@ -463,6 +466,7 @@ fn noop_edit_attempts_clear_stale_status() {
             work_hours: Default::default(),
             shoulder_hours: 1,
             sort_mode: SortMode::default(),
+            default_view: Default::default(),
         },
         support::fixed_now(),
     )
@@ -1199,6 +1203,7 @@ fn compute_header_height_is_fixed_regardless_of_zone_count() {
         work_hours: Default::default(),
         shoulder_hours: 1,
         sort_mode: Default::default(),
+        default_view: Default::default(),
     };
     let model = ComparisonModel::build(seed, support::fixed_now()).unwrap();
     let state = AppState::new(model, support::fixed_now());
@@ -1282,6 +1287,7 @@ fn inspector_scrolls_to_follow_selected_zone() {
         work_hours: Default::default(),
         shoulder_hours: 1,
         sort_mode: SortMode::Manual, // preserve insertion order so zone positions are predictable
+        default_view: Default::default(),
     };
     let model = ComparisonModel::build(seed, support::fixed_now()).unwrap();
     let mut state = AppState::new(model, support::fixed_now());
@@ -1899,6 +1905,7 @@ fn many_zones_render_at_80x24() {
         work_hours: Default::default(),
         shoulder_hours: 1,
         sort_mode: SortMode::Manual,
+        default_view: Default::default(),
     };
 
     let model = ComparisonModel::build(seed, support::fixed_now()).unwrap();
@@ -1977,4 +1984,26 @@ fn jump_to_now_snaps_cursor_to_now_column() {
     state.cursor_minutes = 0;
     state.jump_to_now();
     assert_eq!(state.cursor_minutes / 60, 12); // anchor / now column
+}
+
+#[test]
+fn toggle_view_flips_between_timeline_and_map() {
+    use zonetimeline_tui::core::model::ViewMode;
+    let model = ComparisonModel::build(support::fixture_seed(), support::fixed_now()).unwrap();
+    let mut state = AppState::new(model, support::fixed_now());
+    assert_eq!(state.view, ViewMode::Timeline);
+    state.toggle_view();
+    assert_eq!(state.view, ViewMode::Map);
+    state.toggle_view();
+    assert_eq!(state.view, ViewMode::Timeline);
+}
+
+#[test]
+fn new_state_opens_in_configured_default_view() {
+    use zonetimeline_tui::core::model::ViewMode;
+    let mut seed = support::fixture_seed();
+    seed.default_view = ViewMode::Map;
+    let model = ComparisonModel::build(seed, support::fixed_now()).unwrap();
+    let state = AppState::new(model, support::fixed_now());
+    assert_eq!(state.view, ViewMode::Map);
 }

@@ -39,6 +39,10 @@ pub struct Cli {
     #[arg(long)]
     pub plain: bool,
 
+    /// Launch directly into the interactive world map view.
+    #[arg(long, conflicts_with = "plain")]
+    pub map: bool,
+
     #[arg(
         long,
         help = "Hours outside work window to mark as shoulder (default: 1)"
@@ -63,4 +67,23 @@ fn parse_hhmm(input: &str) -> Result<NaiveTime, String> {
     NaiveTime::parse_from_str(input, "%H:%M")
         .or_else(|_| NaiveTime::parse_from_str(&format!("{input}:00"), "%H:%M"))
         .map_err(|_| format!("{input} is not valid time HH[:MM]"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Cli;
+    use clap::Parser;
+
+    #[test]
+    fn map_conflicts_with_plain() {
+        let err = Cli::try_parse_from(["ztl", "--map", "--plain"])
+            .expect_err("--map and --plain must be mutually exclusive");
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn map_alone_parses() {
+        let cli = Cli::try_parse_from(["ztl", "--map"]).expect("--map alone is valid");
+        assert!(cli.map && !cli.plain);
+    }
 }

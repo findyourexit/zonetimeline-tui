@@ -96,6 +96,7 @@ pub fn run(model: ComparisonModel) -> Result<()> {
             KeyCode::Up | KeyCode::Char('k') => state.focus_up(),
             KeyCode::Down | KeyCode::Char('j') => state.focus_down(),
             KeyCode::Char('n') => state.jump_to_now(),
+            KeyCode::Char('m') => state.toggle_view(),
             KeyCode::Char('?') => state.show_help = true,
             _ => {}
         }
@@ -145,6 +146,7 @@ mod tests {
                 work_hours: Default::default(),
                 shoulder_hours: 1,
                 sort_mode: crate::core::model::SortMode::default(),
+                default_view: Default::default(),
             },
             before,
         )

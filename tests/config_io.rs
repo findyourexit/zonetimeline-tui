@@ -293,6 +293,7 @@ fn saved_anchor_width_and_plain_round_trip_when_cli_omits_them() {
         work_hours: BTreeMap::new(),
         shoulder_hours: 1,
         sort_mode: SortMode::default(),
+        default_view: Default::default(),
     })
     .unwrap();
 
@@ -334,6 +335,7 @@ fn save_session_accepts_relative_explicit_config_path() {
         work_hours: BTreeMap::new(),
         shoulder_hours: 1,
         sort_mode: SortMode::default(),
+        default_view: Default::default(),
     });
 
     std::env::set_current_dir(original_dir).unwrap();
@@ -453,6 +455,7 @@ fn shoulder_hours_round_trips_through_save_and_reload() {
         work_hours: BTreeMap::new(),
         shoulder_hours: 2,
         sort_mode: SortMode::default(),
+        default_view: Default::default(),
     })
     .unwrap();
 
@@ -516,6 +519,7 @@ fn sort_mode_round_trips_through_save_and_reload() {
         work_hours: BTreeMap::new(),
         shoulder_hours: 1,
         sort_mode: SortMode::LabelDesc,
+        default_view: Default::default(),
     })
     .unwrap();
 
@@ -588,4 +592,62 @@ fn default_zones_excludes_utc() {
             "DEFAULT_ZONES should not contain UTC"
         );
     }
+}
+
+#[test]
+fn default_view_round_trips_through_save_and_reload() {
+    use zonetimeline_tui::core::model::ViewMode;
+    let root = tempdir().unwrap();
+    let path = root.path().join("config.toml");
+    save_session(&SessionConfig {
+        base_zones: vec!["Europe/London".to_string()],
+        extra_zones: Vec::new(),
+        ordered_zones: vec!["Europe/London".to_string()],
+        nhours: 12,
+        anchor: AnchorSpec::Now,
+        width: None,
+        plain: false,
+        save_path: path.clone(),
+        default_window: "09:00-17:00".to_string(),
+        work_hours: BTreeMap::new(),
+        shoulder_hours: 1,
+        sort_mode: SortMode::default(),
+        default_view: ViewMode::Map,
+    })
+    .unwrap();
+
+    let loaded = load_file_config(&ConfigSource::new(
+        Some(path),
+        root.path().join("save.toml"),
+    ))
+    .unwrap();
+    let merged = merge_with_cli(
+        &Cli::parse_from(["ztl"]),
+        loaded,
+        ConfigSource::new(None, std::env::temp_dir().join("config.toml")),
+    );
+
+    assert_eq!(merged.default_view, ViewMode::Map);
+}
+
+#[test]
+fn cli_map_flag_forces_map_view() {
+    use zonetimeline_tui::core::model::ViewMode;
+    let merged = merge_with_cli(
+        &Cli::parse_from(["ztl", "--map"]),
+        FileConfig::default(),
+        ConfigSource::new(None, std::env::temp_dir().join("config.toml")),
+    );
+    assert_eq!(merged.default_view, ViewMode::Map);
+}
+
+#[test]
+fn default_view_defaults_to_timeline() {
+    use zonetimeline_tui::core::model::ViewMode;
+    let merged = merge_with_cli(
+        &Cli::parse_from(["ztl"]),
+        FileConfig::default(),
+        ConfigSource::new(None, std::env::temp_dir().join("config.toml")),
+    );
+    assert_eq!(merged.default_view, ViewMode::Timeline);
 }
