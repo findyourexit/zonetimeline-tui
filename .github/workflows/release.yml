@@ -41,13 +41,14 @@ jobs:
             cross: false
             archive: zip
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
+          toolchain: stable
           targets: ${{ matrix.target }}
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           key: ${{ matrix.target }}
 
@@ -91,7 +92,7 @@ jobs:
         shell: pwsh
 
       - name: Upload Artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ${{ matrix.target }}
           path: ${{ env.ARCHIVE }}
@@ -102,7 +103,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           fetch-depth: 0
 
@@ -119,7 +120,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Download All Artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           path: artifacts
           merge-multiple: true
@@ -131,7 +132,7 @@ jobs:
           cat checksums.txt
 
       - name: Create Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           body: ${{ steps.changelog.outputs.body }}
           files: |
@@ -147,7 +148,7 @@ jobs:
         run: |
           set -euxo pipefail
           # ffmpeg and the VHS default font from apt; ttyd and vhs as pinned binaries.
-          for i in 1 2 3; do sudo apt-get update && break || sleep 5; done
+          for _ in 1 2 3; do sudo apt-get update && break; sleep 5; done
           sudo apt-get install -y --no-install-recommends ffmpeg fonts-jetbrains-mono
           curl --retry 3 --retry-delay 5 -fsSL -o /tmp/ttyd \
             "https://github.com/tsl0922/ttyd/releases/download/${TTYD_VERSION}/ttyd.x86_64"
@@ -208,7 +209,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Download Artifacts (macOS)
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           path: artifacts
           merge-multiple: true
@@ -219,12 +220,14 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           SHA_ARM64=$(sha256sum "artifacts/ztl-${VERSION}-aarch64-apple-darwin.tar.gz" | awk '{print $1}')
           SHA_X86_64=$(sha256sum "artifacts/ztl-${VERSION}-x86_64-apple-darwin.tar.gz" | awk '{print $1}')
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "sha_arm64=${SHA_ARM64}" >> "$GITHUB_OUTPUT"
-          echo "sha_x86_64=${SHA_X86_64}" >> "$GITHUB_OUTPUT"
+          {
+            echo "version=${VERSION}"
+            echo "sha_arm64=${SHA_ARM64}"
+            echo "sha_x86_64=${SHA_X86_64}"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Checkout Homebrew Tap
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: findyourexit/homebrew-tap
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
@@ -274,10 +277,37 @@ jobs:
           sed -i "s/SHA_X86_64_PLACEHOLDER/${SHA_X86_64}/g" homebrew-tap/Formula/ztl.rb
 
       - name: Commit & Push Formula
+        env:
+          VERSION: ${{ steps.sha.outputs.version }}
         run: |
           cd homebrew-tap
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add Formula/ztl.rb
-          git commit -m 'chore(release): `ztl` version `${{ steps.sha.outputs.version }}`'
+          git commit -m "chore(release): \`ztl\` version \`${VERSION}\`"
           git push
+
+  publish-crate:
+    name: Publish to crates.io
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      - name: Publish (skip if the version is already on crates.io)
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          NAME="zonetimeline-tui"
+          if curl -sSf -A "${NAME}-release" "https://crates.io/api/v1/crates/${NAME}/${VERSION}" > /dev/null 2>&1; then
+            echo "::notice::${NAME} ${VERSION} is already on crates.io; skipping publish."
+          else
+            cargo publish -p "${NAME}" --locked
+          fi

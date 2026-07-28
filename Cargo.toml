@@ -11,7 +11,21 @@ repository = "https://github.com/findyourexit/zonetimeline-tui"
 homepage = "https://github.com/findyourexit/zonetimeline-tui"
 keywords = ["timezone", "tui", "terminal", "cli", "ratatui"]
 categories = ["command-line-utilities", "date-and-time"]
-exclude = ["/xtask"]
+exclude = [
+    "/.cargo",
+    "/.editorconfig",
+    "/.github",
+    "/.gitignore",
+    "/CODE_OF_CONDUCT.md",
+    "/CONTRIBUTING.md",
+    "/SECURITY.md",
+    "/clippy.toml",
+    "/deny.toml",
+    "/renovate.json",
+    "/rustfmt.toml",
+    "/tapes",
+    "/xtask",
+]
 
 [workspace]
 members = ["xtask"]
