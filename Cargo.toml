@@ -11,6 +11,11 @@ repository = "https://github.com/findyourexit/zonetimeline-tui"
 homepage = "https://github.com/findyourexit/zonetimeline-tui"
 keywords = ["timezone", "tui", "terminal", "cli", "ratatui"]
 categories = ["command-line-utilities", "date-and-time"]
+exclude = ["/xtask"]
+
+[workspace]
+members = ["xtask"]
+resolver = "2"
 
 [[bin]]
 name = "ztl"

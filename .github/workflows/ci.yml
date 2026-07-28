@@ -105,3 +105,21 @@ jobs:
 
       - name: Test
         run: cargo test
+
+  map-data:
+    name: Map Data Drift
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Regenerate vendored map data
+        run: cargo xtask gen-map-data
+
+      - name: Check for drift
+        run: |
+          git diff --exit-code -- src/tui/map/coastline.rs src/tui/map/zone_coords.rs \
+            || { echo "::error::Vendored map data is stale. Run 'cargo xtask gen-map-data' and commit the result."; exit 1; }
