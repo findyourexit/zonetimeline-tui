@@ -5,7 +5,10 @@
 //! and overlays any active modal or help screen. Everything writes directly to
 //! a ratatui [`Buffer`].
 
-use chrono::Timelike;
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use chrono::{DateTime, FixedOffset, Timelike, Utc};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -15,8 +18,13 @@ use ratatui::widgets::{
     Widget, Wrap,
 };
 
-use crate::core::model::MinuteClass;
+use crate::core::model::{MinuteClass, ViewMode};
+use crate::core::timezones::ZoneHandle;
 use crate::tui::forms::Modal;
+use crate::tui::map::canvas::BrailleCanvas;
+use crate::tui::map::locations::{Placement, locate};
+use crate::tui::map::projection::{lat_to_norm, lon_to_norm, norm_to_lat, norm_to_lon};
+use crate::tui::map::solar::{self, SunPosition};
 use crate::tui::palette::{Capability, Palette, Role};
 use crate::tui::ribbon::{self, RibbonState};
 use crate::tui::state::AppState;
@@ -56,6 +64,20 @@ pub fn render_to_buffer_with_palette(
         Paragraph::new("Resize terminal to at least 80x24")
             .block(Block::bordered().title("Zone Timeline"))
             .render(area, buffer);
+        return;
+    }
+
+    if state.view == ViewMode::Map {
+        let controls_height = compute_controls_height(state, area.width);
+        let [map_area, controls_area] =
+            Layout::vertical([Constraint::Min(3), Constraint::Length(controls_height)]).areas(area);
+
+        render_map(buffer, map_area, state, palette);
+        render_controls(buffer, controls_area, state, palette);
+        render_modal(buffer, area, state, palette);
+        if state.show_help {
+            render_help(buffer, area, palette);
+        }
         return;
     }
 
@@ -140,6 +162,15 @@ fn controls_segments(state: &AppState) -> Vec<(String, Role)> {
         ("o".into(), key),
         (format!(" sort:{}", state.sort_mode.label()), desc),
         ("  │  ".into(), desc),
+        ("m".into(), key),
+        (
+            if state.view == ViewMode::Map {
+                " timeline  ".into()
+            } else {
+                " map  ".into()
+            },
+            desc,
+        ),
         ("s".into(), key),
         (" save".into(), desc),
         ("  ".into(), desc),
@@ -778,12 +809,7 @@ fn render_footer(buffer: &mut Buffer, area: Rect, state: &AppState, palette: &Pa
 /// Build the cursor-inspector lines: a header plus one row per zone (UTC first)
 /// showing the exact local time and availability badge at the cursor instant.
 fn inspector_lines(state: &AppState, palette: &Palette) -> Vec<Line<'static>> {
-    let cursor_instant = state
-        .model
-        .timeline_slots
-        .first()
-        .map(|s| s.start_utc + chrono::Duration::minutes(state.cursor_minutes))
-        .unwrap_or(state.model.anchor);
+    let cursor_instant = state.cursor_instant();
     let shoulder_minutes = state.session.shoulder_hours * 60;
     let total = state.model.zones.len();
     let in_core = state
@@ -1409,4 +1435,602 @@ fn panel_block(title: &'static str, focused: bool, palette: &Palette) -> Block<'
         Style::new()
     };
     Block::bordered().title(Span::styled(title, style))
+}
+
+// ============================ World map view =============================
+
+/// Ocean/coastline colours per capability. Day cells sit a shade lighter than
+/// night so the terminator reads as a soft boundary in truecolor.
+struct MapTheme {
+    day_bg: Option<Color>,
+    night_bg: Option<Color>,
+    void_bg: Option<Color>,
+    coast_day: Style,
+    coast_night: Style,
+}
+
+impl MapTheme {
+    fn for_palette(palette: &Palette) -> Self {
+        match palette.capability() {
+            Capability::Truecolor => Self {
+                day_bg: Some(Color::Rgb(0x14, 0x1d, 0x33)),
+                night_bg: Some(Color::Rgb(0x07, 0x0a, 0x16)),
+                void_bg: Some(Color::Rgb(0x04, 0x06, 0x0c)),
+                coast_day: Style::new().fg(Color::Rgb(0x6f, 0xb8, 0x8f)),
+                coast_night: Style::new().fg(Color::Rgb(0x3f, 0x77, 0x63)),
+            },
+            Capability::Ansi16 => Self {
+                day_bg: None,
+                night_bg: Some(Color::Black),
+                void_bg: None,
+                coast_day: Style::new().fg(Color::Green),
+                coast_night: Style::new().fg(Color::Green).add_modifier(Modifier::DIM),
+            },
+            Capability::Monochrome => Self {
+                day_bg: None,
+                night_bg: None,
+                void_bg: None,
+                coast_day: Style::new(),
+                coast_night: Style::new().add_modifier(Modifier::DIM),
+            },
+        }
+    }
+
+    fn coast(&self, night: bool) -> Style {
+        if night {
+            self.coast_night
+        } else {
+            self.coast_day
+        }
+    }
+
+    fn bg(&self, night: bool) -> Option<Color> {
+        if night { self.night_bg } else { self.day_bg }
+    }
+}
+
+/// Cell dimensions of the largest correctly-proportioned map that fits in a
+/// `cols x rows` area. Braille packs 2x4 dots per cell, and a typical 1:2 cell
+/// makes those dots square, so a Web-Mercator world (a unit square) wants
+/// `cols == 2 * rows`; the remainder is letterboxed.
+fn map_dimensions(cols: u16, rows: u16) -> (u16, u16) {
+    if cols >= rows.saturating_mul(2) {
+        (rows.saturating_mul(2), rows)
+    } else {
+        let r = cols / 2;
+        (r.saturating_mul(2), r)
+    }
+}
+
+/// Paint the off-map letterbox so the globe reads as a framed picture.
+fn fill_void(buffer: &mut Buffer, area: Rect, theme: &MapTheme) {
+    let Some(void) = theme.void_bg else {
+        return;
+    };
+    let style = Style::new().bg(void);
+    for y in area.y..area.y + area.height {
+        for x in area.x..area.x + area.width {
+            if let Some(cell) = buffer.cell_mut((x, y)) {
+                cell.set_char(' ');
+                cell.set_style(style);
+            }
+        }
+    }
+}
+
+/// One configured zone as drawn on the map.
+struct MapMarker {
+    lat: f64,
+    lon: f64,
+    placement: Placement,
+    role: Role,
+    night: bool,
+    time: String,
+    selected: bool,
+}
+
+/// Render the full-screen world map: a bordered frame with a marker legend, the
+/// braille globe, and a status line describing the selected zone.
+fn render_map(buffer: &mut Buffer, area: Rect, state: &AppState, palette: &Palette) {
+    let cursor = state.cursor_instant();
+    let title = format!(" World Map · {} UTC ", cursor.format("%Y-%m-%d %H:%M"));
+    let block = Block::bordered().title(title);
+    let inner = block.inner(area);
+    block.render(area, buffer);
+
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+
+    let [legend_area, canvas_area, status_area] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(1),
+        Constraint::Length(1),
+    ])
+    .areas(inner);
+
+    render_map_legend(buffer, legend_area, palette);
+    render_map_canvas(buffer, canvas_area, state, palette, cursor);
+    render_map_status(buffer, status_area, state, palette, cursor);
+}
+
+/// The marker + day/night key shown above the map.
+fn render_map_legend(buffer: &mut Buffer, area: Rect, palette: &Palette) {
+    let bold = |role: Role| palette.style(role).add_modifier(Modifier::BOLD);
+    let muted = palette.style(Role::Muted);
+    let mut spans = vec![
+        Span::styled("● ", bold(Role::Good)),
+        Span::styled("Core  ", muted),
+        Span::styled("● ", bold(Role::Caution)),
+        Span::styled("Shoulder  ", muted),
+        Span::styled("● ", bold(Role::Muted)),
+        Span::styled("Off   ", muted),
+        Span::styled("○ ", bold(Role::Muted)),
+        Span::styled("Offset  ", muted),
+        Span::styled("◉ ", bold(Role::MarkerCursor)),
+        Span::styled("Selected", muted),
+    ];
+    if palette.capability() == Capability::Truecolor {
+        spans.push(Span::styled("   ", muted));
+        spans.push(Span::styled(
+            "  ",
+            Style::new().bg(Color::Rgb(0x14, 0x1d, 0x33)),
+        ));
+        spans.push(Span::styled(" Day ", muted));
+        spans.push(Span::styled(
+            "  ",
+            Style::new().bg(Color::Rgb(0x07, 0x0a, 0x16)),
+        ));
+        spans.push(Span::styled(" Night", muted));
+    }
+    let budget = area.width as usize;
+    let total: usize = spans.iter().map(|s| s.content.chars().count()).sum();
+    let spans = if budget > 0 && total > budget {
+        truncate_spans_with_ellipsis(&spans, budget, palette)
+    } else {
+        spans
+    };
+    Paragraph::new(Line::from(spans)).render(area, buffer);
+}
+
+/// The coastline rasterized into one aspect-correct world, memoized by cell
+/// size. The outline depends only on `(cols, rows)`, so it is stroked once per
+/// size and reused across frames and horizontal tiles instead of rebuilt every
+/// render (the stroke walks thousands of vendored vertices).
+fn coastline_canvas(cols: u16, rows: u16) -> Rc<BrailleCanvas> {
+    thread_local! {
+        static CACHE: RefCell<Option<(u16, u16, Rc<BrailleCanvas>)>> =
+            const { RefCell::new(None) };
+    }
+    CACHE.with_borrow_mut(|cache| {
+        if let Some((w, h, canvas)) = cache {
+            if *w == cols && *h == rows {
+                return Rc::clone(canvas);
+            }
+        }
+        let mut canvas = BrailleCanvas::new(cols, rows);
+        for line in crate::tui::map::coastline::COASTLINE {
+            for pair in line.windows(2) {
+                canvas.stroke_geo(
+                    pair[0].0 as f64,
+                    pair[0].1 as f64,
+                    pair[1].0 as f64,
+                    pair[1].1 as f64,
+                );
+            }
+        }
+        let canvas = Rc::new(canvas);
+        *cache = Some((cols, rows, Rc::clone(&canvas)));
+        canvas
+    })
+}
+
+/// Rasterize the coastline, shade day/night per cell, then overlay zone markers
+/// and decluttered local-time labels.
+fn render_map_canvas(
+    buffer: &mut Buffer,
+    area: Rect,
+    state: &AppState,
+    palette: &Palette,
+    cursor: DateTime<Utc>,
+) {
+    let (cols, rows) = (area.width, area.height);
+    if cols == 0 || rows == 0 {
+        return;
+    }
+    let theme = MapTheme::for_palette(palette);
+
+    // Largest aspect-correct world that fits (a 2:1 cell block; see
+    // `map_dimensions`). `unit_w` / `unit_h` are one world's cell size.
+    let (unit_w, unit_h) = map_dimensions(cols, rows);
+    if unit_w == 0 || unit_h == 0 {
+        return;
+    }
+
+    // Tile horizontally only when the map is height-bound (surplus width);
+    // never tile into surplus vertical space — letterbox that instead.
+    let tiling = unit_h == rows && cols > unit_w;
+    let ox = ((cols - unit_w) / 2) as i32; // primary world's left column
+    let oy = (rows - unit_h) / 2; // vertical letterbox offset
+
+    fill_void(buffer, area, &theme);
+
+    let sun = solar::subsolar(cursor);
+
+    // One aspect-correct world of coastline, rasterized once per size and
+    // reused across frames and tiles (see `coastline_canvas`).
+    let canvas = coastline_canvas(unit_w, unit_h);
+
+    // Paint coastline + day/night. When tiling, each column maps back to a
+    // column of the single world (modulo its width) so the globe repeats
+    // seamlessly; otherwise only the centred world is drawn.
+    let (x0, x1) = if tiling {
+        (0, cols)
+    } else {
+        (ox as u16, ox as u16 + unit_w)
+    };
+    for cy in 0..unit_h {
+        for cx in x0..x1 {
+            let u = (cx as i32 - ox).rem_euclid(unit_w as i32) as u16;
+            let lon = norm_to_lon((u as f64 + 0.5) / unit_w as f64);
+            let lat = norm_to_lat((cy as f64 + 0.5) / unit_h as f64);
+            let night = solar::is_night(&sun, lat, lon);
+            let Some(cell) = buffer.cell_mut((area.x + cx, area.y + oy + cy)) else {
+                continue;
+            };
+            let (glyph, mut style) = match canvas.glyph(u, cy) {
+                Some(g) => (g, theme.coast(night)),
+                None => (' ', Style::new()),
+            };
+            if let Some(c) = theme.bg(night) {
+                style = style.bg(c);
+            }
+            cell.set_char(glyph);
+            cell.set_style(style);
+        }
+    }
+
+    // Markers: dots tile across every visible world; labels are drawn once, in
+    // the primary world, so wide terminals don't repeat every HH:MM.
+    let markers = collect_markers(state, cursor, &sun);
+    let mut occupied = vec![false; cols as usize * unit_h as usize];
+    for selected in [false, true] {
+        for m in markers.iter().filter(|m| m.selected == selected) {
+            let (um, umy) = marker_cell(m.lon, m.lat, unit_w, unit_h);
+            for x in marker_columns(um, ox, unit_w, cols, tiling) {
+                occupied[umy as usize * cols as usize + x as usize] = true;
+                draw_marker_cell(buffer, area.x + x, area.y + oy + umy, m, &theme, palette);
+            }
+        }
+    }
+    for selected in [false, true] {
+        for m in markers.iter().filter(|m| m.selected == selected) {
+            let (um, umy) = marker_cell(m.lon, m.lat, unit_w, unit_h);
+            let primary_x = (ox + um as i32) as u16;
+            place_label_at(
+                buffer,
+                area,
+                cols,
+                oy,
+                primary_x,
+                umy,
+                m,
+                &theme,
+                palette,
+                &mut occupied,
+            );
+        }
+    }
+}
+
+/// Build a marker for every configured zone (UTC reference row first).
+fn collect_markers(state: &AppState, cursor: DateTime<Utc>, sun: &SunPosition) -> Vec<MapMarker> {
+    let now = state.now_utc;
+    let shoulder_minutes = state.session.shoulder_hours * 60;
+    let mut markers = Vec::with_capacity(state.display_order.len() + 1);
+
+    let utc = ZoneHandle::Fixed(FixedOffset::east_opt(0).unwrap());
+    let utc_loc = locate(&utc, now);
+    markers.push(MapMarker {
+        lat: utc_loc.lat,
+        lon: utc_loc.lon,
+        placement: utc_loc.placement,
+        role: Role::Muted,
+        night: solar::is_night(sun, utc_loc.lat, utc_loc.lon),
+        time: cursor.format("%H:%M").to_string(),
+        selected: state.selected_zone == 0,
+    });
+
+    for (display_idx, &model_idx) in state.display_order.iter().enumerate() {
+        let zone = &state.model.zones[model_idx];
+        let loc = locate(&zone.handle, now);
+        let minute = zone.handle.minute_of_day(cursor);
+        let role = marker_role(ribbon::classify(minute, &zone.window, shoulder_minutes));
+        markers.push(MapMarker {
+            lat: loc.lat,
+            lon: loc.lon,
+            placement: loc.placement,
+            role,
+            night: solar::is_night(sun, loc.lat, loc.lon),
+            time: zone.handle.local_time(cursor).format("%H:%M").to_string(),
+            selected: state.selected_zone == display_idx + 1,
+        });
+    }
+    markers
+}
+
+/// Map a per-zone availability state to its marker colour role.
+fn marker_role(state: RibbonState) -> Role {
+    match state {
+        RibbonState::Core => Role::Good,
+        RibbonState::Shoulder => Role::Caution,
+        RibbonState::Off => Role::Muted,
+    }
+}
+
+/// Project a `(lon, lat)` degree pair to a clamped terminal cell.
+fn marker_cell(lon: f64, lat: f64, cols: u16, rows: u16) -> (u16, u16) {
+    let cx = (lon_to_norm(lon) * cols as f64).floor() as i64;
+    let cy = (lat_to_norm(lat) * rows as f64).floor() as i64;
+    (
+        cx.clamp(0, cols as i64 - 1) as u16,
+        cy.clamp(0, rows as i64 - 1) as u16,
+    )
+}
+
+/// Draw one marker glyph at absolute buffer cell `(bx, by)`, preserving the
+/// day/night background beneath it.
+fn draw_marker_cell(
+    buffer: &mut Buffer,
+    bx: u16,
+    by: u16,
+    m: &MapMarker,
+    theme: &MapTheme,
+    palette: &Palette,
+) {
+    let (glyph, role) = if m.selected {
+        ('◉', Role::MarkerCursor)
+    } else {
+        let g = match m.placement {
+            Placement::Geographic => '●',
+            Placement::Offset => '○',
+        };
+        (g, m.role)
+    };
+    let mut style = palette.style(role).add_modifier(Modifier::BOLD);
+    if let Some(c) = theme.bg(m.night) {
+        style = style.bg(c);
+    }
+    if let Some(cell) = buffer.cell_mut((bx, by)) {
+        cell.set_char(glyph);
+        cell.set_style(style);
+    }
+}
+
+/// Canvas columns (`0..cols`) at which a marker in world-column `um` appears,
+/// accounting for horizontal tiling.
+fn marker_columns(um: u16, ox: i32, unit_w: u16, cols: u16, tiling: bool) -> Vec<u16> {
+    let base = ox + um as i32;
+    if !tiling {
+        return if (0..cols as i32).contains(&base) {
+            vec![base as u16]
+        } else {
+            Vec::new()
+        };
+    }
+    let uw = unit_w as i32;
+    let k_lo = (-base).div_euclid(uw);
+    let k_hi = (cols as i32 - 1 - base).div_euclid(uw);
+    (k_lo..=k_hi)
+        .map(|k| base + k * uw)
+        .filter(|&x| (0..cols as i32).contains(&x))
+        .map(|x| x as u16)
+        .collect()
+}
+
+/// Place a marker's local-time label near canvas column `mx` on world row `my`,
+/// decluttering against `occupied`; the selected zone's label is forced.
+#[allow(clippy::too_many_arguments)]
+fn place_label_at(
+    buffer: &mut Buffer,
+    area: Rect,
+    cols: u16,
+    oy: u16,
+    mx: u16,
+    my: u16,
+    m: &MapMarker,
+    theme: &MapTheme,
+    palette: &Palette,
+    occupied: &mut [bool],
+) {
+    let text: Vec<char> = m.time.chars().collect();
+    let len = text.len() as u16;
+    if len == 0 || len >= cols {
+        return;
+    }
+    let row = my as usize * cols as usize;
+    let free = |start: u16, occupied: &[bool]| -> bool {
+        start + len <= cols && (0..len).all(|i| !occupied[row + (start + i) as usize])
+    };
+    let right = mx + 1;
+    let left = mx.saturating_sub(len);
+    let start = if free(right, occupied) {
+        Some(right)
+    } else if mx >= len && free(left, occupied) {
+        Some(left)
+    } else if m.selected {
+        Some(right.min(cols - len))
+    } else {
+        None
+    };
+    let Some(start) = start else {
+        return;
+    };
+    let base = if m.selected {
+        palette.style(Role::LabelSelected)
+    } else {
+        map_label_style(palette)
+    };
+    for (i, ch) in text.iter().enumerate() {
+        let x = start + i as u16;
+        if x >= cols {
+            break;
+        }
+        occupied[row + x as usize] = true;
+        if let Some(cell) = buffer.cell_mut((area.x + x, area.y + oy + my)) {
+            let mut style = base;
+            if let Some(c) = theme.bg(m.night) {
+                style = style.bg(c);
+            }
+            cell.set_char(*ch);
+            cell.set_style(style);
+        }
+    }
+}
+
+/// Foreground style for a non-selected local-time label.
+fn map_label_style(palette: &Palette) -> Style {
+    match palette.capability() {
+        Capability::Truecolor => Style::new().fg(Color::Rgb(0xd7, 0xdd, 0xea)),
+        Capability::Ansi16 => Style::new().fg(Color::White),
+        Capability::Monochrome => Style::new().add_modifier(Modifier::DIM),
+    }
+}
+
+/// The status line beneath the map: selected-zone detail plus a subsolar hint.
+fn render_map_status(
+    buffer: &mut Buffer,
+    area: Rect,
+    state: &AppState,
+    palette: &Palette,
+    cursor: DateTime<Utc>,
+) {
+    let shoulder_minutes = state.session.shoulder_hours * 60;
+    let (label, time, badge, badge_role) = selected_map_detail(state, cursor, shoulder_minutes);
+    let sun = solar::subsolar(cursor);
+    let (deg, hemi) = if sun.lon >= 0.0 {
+        (sun.lon, 'E')
+    } else {
+        (-sun.lon, 'W')
+    };
+    let spans = vec![
+        Span::styled("▸ ", palette.style(Role::Heading)),
+        Span::styled(format!("{label}  "), palette.style(Role::Selected)),
+        Span::styled(
+            format!("{time} "),
+            Style::new().add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(badge, palette.style(badge_role)),
+        Span::styled(
+            format!("    ☀ over {deg:.0}°{hemi}"),
+            palette.style(Role::Muted),
+        ),
+    ];
+    Paragraph::new(Line::from(spans)).render(area, buffer);
+}
+
+/// Resolve the selected zone's label, local time, and availability badge.
+fn selected_map_detail(
+    state: &AppState,
+    cursor: DateTime<Utc>,
+    shoulder_minutes: u16,
+) -> (String, String, String, Role) {
+    if state.selected_zone != 0 {
+        let display_idx = state.selected_zone - 1;
+        if let Some(&model_idx) = state.display_order.get(display_idx) {
+            let zone = &state.model.zones[model_idx];
+            let minute = zone.handle.minute_of_day(cursor);
+            let (badge, role) = match ribbon::classify(minute, &zone.window, shoulder_minutes) {
+                RibbonState::Core => ("core", Role::Good),
+                RibbonState::Shoulder => ("shoulder", Role::Caution),
+                RibbonState::Off => ("off", Role::Muted),
+            };
+            return (
+                zone.label.clone(),
+                zone.handle.local_time(cursor).format("%H:%M").to_string(),
+                badge.to_string(),
+                role,
+            );
+        }
+    }
+    (
+        "UTC".to_string(),
+        cursor.format("%H:%M").to_string(),
+        "reference".to_string(),
+        Role::Muted,
+    )
+}
+
+#[cfg(test)]
+mod map_tests {
+    use super::{map_dimensions, render_map};
+    use crate::config::SessionSeed;
+    use crate::core::model::{ComparisonModel, ViewMode};
+    use crate::tui::palette::{Capability, Palette};
+    use crate::tui::state::AppState;
+    use chrono::{TimeZone, Utc};
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+
+    #[test]
+    fn map_dimensions_keep_a_two_to_one_aspect() {
+        // A wide area is height-bound: the map fills the height at 2:1.
+        assert_eq!(map_dimensions(100, 20), (40, 20));
+        // A tall / near-square area is width-bound: it fills the width at 2:1.
+        assert_eq!(map_dimensions(30, 40), (30, 15));
+        // An exact 2:1 area is used whole.
+        assert_eq!(map_dimensions(48, 24), (48, 24));
+    }
+
+    #[test]
+    fn map_dimensions_are_bounded_and_proportioned() {
+        for cols in [2u16, 3, 40, 79, 120, 240] {
+            for rows in [1u16, 10, 24, 60] {
+                let (mc, mr) = map_dimensions(cols, rows);
+                assert!(mc <= cols && mr <= rows, "{cols}x{rows} -> {mc}x{mr}");
+                assert_eq!(mc, mr * 2, "{cols}x{rows} -> {mc}x{mr} not 2:1");
+            }
+        }
+    }
+
+    fn sample_map_state() -> AppState {
+        let now = Utc.with_ymd_and_hms(2026, 4, 1, 12, 0, 0).unwrap();
+        let zones = vec!["America/New_York".to_string(), "Asia/Kolkata".to_string()];
+        let seed = SessionSeed {
+            base_zones: zones.clone(),
+            ordered_zones: zones,
+            nhours: 24,
+            default_window: "09:00-17:00".to_string(),
+            ..Default::default()
+        };
+        let model = ComparisonModel::build(seed, now).unwrap();
+        let mut state = AppState::new(model, now);
+        state.view = ViewMode::Map;
+        state
+    }
+
+    #[test]
+    fn render_map_never_panics_at_degenerate_sizes() {
+        // The 80x24 public floor hides render_map's own zero-area guards; call
+        // it directly at sub-floor sizes so a future floor change can't quietly
+        // reintroduce an out-of-bounds panic.
+        let state = sample_map_state();
+        let palette = Palette::new(Capability::Truecolor);
+        for (w, h) in [
+            (0u16, 0u16),
+            (1, 1),
+            (2, 1),
+            (1, 2),
+            (3, 3),
+            (6, 4),
+            (10, 8),
+            (200, 1),
+            (1, 60),
+            (80, 24),
+        ] {
+            let area = Rect::new(0, 0, w, h);
+            let mut buf = Buffer::empty(area);
+            render_map(&mut buf, area, &state, &palette);
+        }
+    }
 }

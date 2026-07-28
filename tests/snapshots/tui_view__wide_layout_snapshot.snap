@@ -31,4 +31,4 @@ expression: "render_symbols(&state, 200, 30)"
 │                                                                                                  ││Asia/Kolkata       17:30 shldr                                                                    │
 │                                                                                                  ││Australia/Sydney   23:00 off                                                                      │
 └──────────────────────────────────────────────────────────────────────────────────────────────────┘└──────────────────────────────────────────────────────────────────────────────────────────────────┘
- h/l cursor  j/k zones  n now  │  a add  x del  J/K move  e edit  o sort:UTC+  │  s save  ? help  q quit
+ h/l cursor  j/k zones  n now  │  a add  x del  J/K move  e edit  o sort:UTC+  │  m map  s save  ? help  q quit

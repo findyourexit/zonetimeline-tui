@@ -9,7 +9,7 @@ mod support;
 use chrono::NaiveTime;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use zonetimeline_tui::core::model::ComparisonModel;
+use zonetimeline_tui::core::model::{ComparisonModel, ViewMode};
 use zonetimeline_tui::tui::palette::{Capability, Palette, Role};
 use zonetimeline_tui::tui::state::AppState;
 use zonetimeline_tui::tui::view::render_to_buffer_with_palette;
@@ -265,4 +265,180 @@ fn monochrome_overlays_emit_no_colour() {
     edit.selected_zone = 1;
     edit.open_edit_window();
     assert_no_colour(&edit, 120, 28);
+}
+
+// ============================ World map view =============================
+//
+// The braille coastline is projected with trig, whose last-ULP results can
+// differ across platforms and shift a dot into a neighbouring cell — so a
+// pixel-exact snapshot would be flaky in CI. These tests assert the render's
+// observable contract instead: the frame, a marker per zone, the day/night
+// terminator, availability colour wiring, and monochrome colour-safety.
+
+/// The 6-zone fixed state, switched to the map view.
+fn fixed_map_state() -> AppState {
+    let mut state = fixed_state(24);
+    state.view = ViewMode::Map;
+    state
+}
+
+/// Render the map view for a palette and return one string per row.
+fn map_rows(cap: Capability, w: u16, h: u16) -> Vec<String> {
+    let state = fixed_map_state();
+    let area = Rect::new(0, 0, w, h);
+    let mut buf = Buffer::empty(area);
+    render_to_buffer_with_palette(&mut buf, area, &state, &Palette::new(cap));
+    (0..h)
+        .map(|y| (0..w).map(|x| buf.cell((x, y)).unwrap().symbol()).collect())
+        .collect()
+}
+
+#[test]
+fn map_view_draws_frame_markers_and_coastline() {
+    let all = map_rows(Capability::Truecolor, 120, 28).join("\n");
+    assert!(all.contains("World Map"), "map frame title present");
+    assert!(all.contains('◉'), "selected zone uses the highlight marker");
+    let markers = all
+        .chars()
+        .filter(|&c| matches!(c, '●' | '○' | '◉'))
+        .count();
+    assert!(
+        markers >= 6,
+        "expected a marker per zone (6 + UTC), got {markers}"
+    );
+    let braille = all
+        .chars()
+        .filter(|c| ('\u{2800}'..='\u{28ff}').contains(c))
+        .count();
+    assert!(braille > 100, "expected a braille coastline, got {braille}");
+}
+
+#[test]
+fn map_view_shades_day_and_night_in_truecolor() {
+    use ratatui::style::Color;
+    let state = fixed_map_state();
+    let area = Rect::new(0, 0, 120, 28);
+    let mut buf = Buffer::empty(area);
+    render_to_buffer_with_palette(&mut buf, area, &state, &Palette::new(Capability::Truecolor));
+    let (mut day, mut night) = (false, false);
+    for y in 0..area.height {
+        for x in 0..area.width {
+            match buf.cell((x, y)).unwrap().bg {
+                Color::Rgb(0x14, 0x1d, 0x33) => day = true,
+                Color::Rgb(0x07, 0x0a, 0x16) => night = true,
+                _ => {}
+            }
+        }
+    }
+    assert!(day, "expected a lit day hemisphere");
+    assert!(night, "expected a shaded night hemisphere");
+}
+
+#[test]
+fn map_markers_carry_availability_colour_in_truecolor() {
+    use ratatui::style::Color;
+    let state = fixed_map_state();
+    let area = Rect::new(0, 0, 120, 28);
+    let mut buf = Buffer::empty(area);
+    render_to_buffer_with_palette(&mut buf, area, &state, &Palette::new(Capability::Truecolor));
+    // At 12:00 UTC, London/Berlin are inside core hours → green markers.
+    let mut core_marker = false;
+    for y in 0..area.height {
+        for x in 0..area.width {
+            let cell = buf.cell((x, y)).unwrap();
+            if matches!(cell.symbol(), "●" | "○" | "◉") && cell.fg == Color::Rgb(0x2e, 0xcc, 0x71)
+            {
+                core_marker = true;
+            }
+        }
+    }
+    assert!(
+        core_marker,
+        "expected at least one core (green) availability marker"
+    );
+}
+
+#[test]
+fn map_view_is_colour_free_in_monochrome() {
+    assert_no_colour(&fixed_map_state(), 120, 28);
+}
+
+#[test]
+fn map_view_renders_without_panic_across_palettes_and_sizes() {
+    for cap in [
+        Capability::Truecolor,
+        Capability::Ansi16,
+        Capability::Monochrome,
+    ] {
+        for (w, h) in [(80, 24), (120, 28), (200, 50)] {
+            let _ = map_rows(cap, w, h);
+        }
+    }
+}
+
+#[test]
+fn map_legend_labels_are_title_cased() {
+    let all = map_rows(Capability::Truecolor, 120, 28).join("\n");
+    for label in [
+        "Core", "Shoulder", "Off", "Offset", "Selected", "Day", "Night",
+    ] {
+        assert!(
+            all.contains(label),
+            "legend should contain title-cased {label:?}"
+        );
+    }
+    // The lowercase forms must be gone.
+    assert!(
+        !all.contains("offset"),
+        "legend still shows lowercase 'offset'"
+    );
+    assert!(
+        !all.contains("selected"),
+        "legend still shows lowercase 'selected'"
+    );
+}
+
+#[test]
+fn map_tiles_horizontally_on_wide_terminals() {
+    use ratatui::style::Color;
+    let state = fixed_map_state();
+    // A wide, short terminal has surplus width: the world tiles to fill it, so
+    // there is no off-map void and the selected marker repeats across copies.
+    let area = Rect::new(0, 0, 200, 24);
+    let mut buf = Buffer::empty(area);
+    render_to_buffer_with_palette(&mut buf, area, &state, &Palette::new(Capability::Truecolor));
+    let void = Color::Rgb(0x04, 0x06, 0x0c);
+    let void_cells = (0..area.height)
+        .flat_map(|y| (0..area.width).map(move |x| (x, y)))
+        .filter(|&(x, y)| buf.cell((x, y)).unwrap().bg == void)
+        .count();
+    assert_eq!(void_cells, 0, "a tiled wide map should leave no void");
+    let selected = (0..area.height)
+        .flat_map(|y| (0..area.width).map(move |x| (x, y)))
+        .filter(|&(x, y)| buf.cell((x, y)).unwrap().symbol() == "◉")
+        .count();
+    assert!(
+        selected >= 2,
+        "the selected marker should repeat across tiles, got {selected}"
+    );
+}
+
+#[test]
+fn map_letterboxes_vertically_on_tall_terminals() {
+    use ratatui::style::Color;
+    let state = fixed_map_state();
+    // A tall, narrow terminal has surplus height: no tiling — the single world
+    // is centred vertically with an off-map void above and below.
+    let area = Rect::new(0, 0, 90, 60);
+    let mut buf = Buffer::empty(area);
+    render_to_buffer_with_palette(&mut buf, area, &state, &Palette::new(Capability::Truecolor));
+    let void = Color::Rgb(0x04, 0x06, 0x0c);
+    let void_cells = (0..area.height)
+        .flat_map(|y| (0..area.width).map(move |x| (x, y)))
+        .filter(|&(x, y)| buf.cell((x, y)).unwrap().bg == void)
+        .count();
+    assert!(
+        void_cells > 0,
+        "a tall terminal should letterbox vertically"
+    );
 }
