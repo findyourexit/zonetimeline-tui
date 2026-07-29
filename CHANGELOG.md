@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-29
+
 ### Added
 
 - A full-screen **world map** view: press `m` to toggle between the timeline and the map, or launch straight into it with `ztl --map`. Every configured zone is plotted on a Unicode-braille Web-Mercator projection that reflows with the terminal, coloured by the same core / shoulder / off availability as the timeline and driven by the shared cursor instant. A shaded day/night hemisphere with a solar terminator tracks the cursor so you can see at a glance who is awake, the focused zone is highlighted (`◉`) with its local time on a status line, and UTC / fixed-offset zones sit on the equator at their offset longitude with a distinct hollow marker. Coastlines are bundled from Natural Earth and per-zone coordinates from the IANA time zone database, so the build stays offline and dependency-free.
