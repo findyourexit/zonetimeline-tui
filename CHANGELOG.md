@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Refreshed the project header artwork, configuration reference, contributor guidance, and reporting policies.
+- Updated Rust dependencies and the GitHub Actions used by CI and releases.
+
+### Fixed
+
+- Release automation now regenerates the world-map demo alongside the other README GIFs.
+
 ## [0.4.0] - 2026-07-29
 
 ### Added

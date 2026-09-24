@@ -119,7 +119,7 @@ pub struct SessionConfig {
     pub nhours: u16,
     /// Timeline anchor point.
     pub anchor: AnchorSpec,
-    /// Optional explicit terminal width override.
+    /// Optional plain-text output width override.
     pub width: Option<u16>,
     /// If true, disable colors/styles for piping.
     pub plain: bool,

@@ -5,7 +5,7 @@ Thanks for your interest in contributing! Here's how to get started.
 ## Getting Started
 
 1. Fork and clone the repository.
-2. Make sure you have a recent [Rust toolchain](https://rustup.rs/) installed.
+2. Install [Rust 1.88 or newer](https://rustup.rs/).
 3. Run the test suite to confirm everything works:
    ```bash
    cargo test
@@ -21,7 +21,7 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test
 ```
 
-CI runs these same checks on every pull request.
+CI runs these checks on every pull request, plus dependency auditing, coverage collection, macOS and Windows tests, and generated map-data drift detection.
 
 ## Pull Requests
 

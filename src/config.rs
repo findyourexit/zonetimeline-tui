@@ -132,7 +132,7 @@ impl FileConfig {
 pub struct GeneralConfig {
     /// Primary zone list (`zones = [...]` in TOML).
     pub zones: Vec<String>,
-    /// Additional zones appended via `[[zone]]` entries.
+    /// Additional zones appended after `zones` (`zone = [...]` in TOML).
     pub zone: Vec<String>,
     /// Persisted display order (may diverge from `zones + zone` after user reorder).
     pub ordered_zones: Vec<String>,
@@ -140,7 +140,7 @@ pub struct GeneralConfig {
     pub nhours: Option<u16>,
     /// Fixed anchor time (`HH:MM`); `None` means "now".
     pub anchor_time: Option<String>,
-    /// Terminal column width override.
+    /// Plain-text output width override.
     pub width: Option<u16>,
     /// If `true`, skip the TUI and use plain-text output.
     pub plain: bool,
@@ -185,7 +185,7 @@ impl Default for OverlapConfig {
 pub struct SessionSeed {
     /// Primary zone list (from `--zones` or config `zones`).
     pub base_zones: Vec<String>,
-    /// Extra zones appended via `--zone` or config `[[zone]]`.
+    /// Extra zones appended via `--zone` or config `zone = [...]`.
     pub extra_zones: Vec<String>,
     /// Display order after merge and dedup.
     pub ordered_zones: Vec<String>,
@@ -193,7 +193,7 @@ pub struct SessionSeed {
     pub nhours: u16,
     /// Fixed anchor time; `None` means "now".
     pub anchor_time: Option<NaiveTime>,
-    /// Terminal column width override.
+    /// Plain-text output width override.
     pub width: Option<u16>,
     /// Skip the TUI and render plain text.
     pub plain: bool,
