@@ -7,7 +7,7 @@
 #   cargo build --release && vhs tapes/demo.tape
 # Requires vhs, ttyd and ffmpeg on PATH. Zones live in tapes/demo.toml and the
 # launch runs inside the hidden setup block, so the GIF opens on the rendered
-# TUI. The anchor is left live, so the view is centred on "now" (v marker).
+# TUI. The anchor is left live, so the view is centred on "now" (▼ marker).
 
 Output assets/demo.gif
 
@@ -44,7 +44,7 @@ Sleep 1s
 Left@220ms 12
 Sleep 1s
 
-# Jump the cursor to "now" (also marked by the v caret).
+# Jump the cursor to "now" (also marked by the ▼ caret).
 Type "n"
 Sleep 1.2s
 

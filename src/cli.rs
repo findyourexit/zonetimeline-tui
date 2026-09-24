@@ -31,7 +31,7 @@ pub struct Cli {
     #[arg(short = 'c', long)]
     pub config: Option<PathBuf>,
 
-    /// Output width in columns.
+    /// Plain-text output width in columns.
     #[arg(short = 'w', long)]
     pub width: Option<u16>,
 

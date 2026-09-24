@@ -8,7 +8,7 @@ Instead, please use one of the following methods:
 
 1. **GitHub Security Advisories** (preferred): Use the [Report a vulnerability](https://github.com/findyourexit/zonetimeline-tui/security/advisories/new) button on the Security tab of this repository.
 
-2. **Email**: Contact the [maintainer](https://github.com/findyourexit) directly.
+2. **Email**: Email the maintainer at [tom.larcher@gmail.com](mailto:tom.larcher@gmail.com).
 
 ## What to Include
 

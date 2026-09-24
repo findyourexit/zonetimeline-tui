@@ -46,9 +46,10 @@ Archives are provided for:
 <summary><strong>Build It Yourself</strong></summary>
 
 ### Source Build
+Requires Rust 1.88 or newer.
 
 ```bash
-cargo install --git https://github.com/findyourexit/zonetimeline-tui
+cargo install --locked --git https://github.com/findyourexit/zonetimeline-tui
 ```
 
 ### Local Build
@@ -86,7 +87,7 @@ ztl list
 
 - `--time` is interpreted in UTC and accepts both `HH` and `HH:MM`.
 - An explicit time is applied to the current UTC date.
-- `--width` sets the output width in columns.
+- `--width` sets the plain-text output width in columns.
 - `--shoulder-hours` controls how many hours outside the work window are marked as shoulder time (default: 1).
 
 ### The Timeline View
@@ -170,6 +171,27 @@ Zone merging follows per-field precedence:
 
 The TUI opens on the timeline by default. Set `default_view = "map"` in the `[general]` section — or pass `--map` — to open on the world map instead; saving in the TUI (`s`) persists whichever view you are in.
 
+### Example configuration
+
+A config may contain:
+
+```toml
+[general]
+zones = ["America/New_York", "Europe/London"]
+zone = ["Asia/Tokyo"]
+nhours = 24
+default_view = "timeline"
+
+[overlap]
+default_window = "09:00-17:00"
+shoulder_hours = 1
+
+[overlap.work_hours]
+"Europe/London" = "08:00-16:00"
+```
+
+Work-window values use `HH:MM-HH:MM` in each zone's local time and may cross midnight. Optional `[general]` fields are `anchor_time` (`HH:MM` in UTC), `width` (plain-text output only), `plain`, `sort_mode` (`utc_offset_asc`, `utc_offset_desc`, `label_asc`, `label_desc`, or `manual`), and `ordered_zones` (the manual order persisted by the TUI).
+
 ## Development
 
 ```bash
@@ -186,6 +208,7 @@ The demo GIFs are recorded with [VHS](https://github.com/charmbracelet/vhs) from
 cargo build --release
 vhs tapes/demo.tape      # hero            -> assets/demo.gif
 vhs tapes/timeline.tape  # timeline view   -> assets/timeline.gif
+vhs tapes/map.tape       # world map       -> assets/map.gif
 vhs tapes/manage.tape    # zone management -> assets/manage.gif
 ```
 

@@ -1,5 +1,5 @@
 # "The Timeline View" GIF (-> assets/timeline.gif): the 30-minute cursor and
-# the live At-cursor inspector, plus the v now marker and best-window summary.
+# the live At-cursor inspector, plus the ▼ now marker and best-window summary.
 #
 # Regenerate from the repo root:
 #   cargo build --release && vhs tapes/timeline.tape
@@ -48,7 +48,7 @@ Sleep 1.3s
 Down 1
 Sleep 1.6s
 
-# Snap the cursor back to now (the v marker).
+# Snap the cursor back to now (the ▼ marker).
 Type "n"
 Sleep 2.5s
 

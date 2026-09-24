@@ -1603,10 +1603,11 @@ fn coastline_canvas(cols: u16, rows: u16) -> Rc<BrailleCanvas> {
             const { RefCell::new(None) };
     }
     CACHE.with_borrow_mut(|cache| {
-        if let Some((w, h, canvas)) = cache {
-            if *w == cols && *h == rows {
-                return Rc::clone(canvas);
-            }
+        if let Some((w, h, canvas)) = cache
+            && *w == cols
+            && *h == rows
+        {
+            return Rc::clone(canvas);
         }
         let mut canvas = BrailleCanvas::new(cols, rows);
         for line in crate::tui::map::coastline::COASTLINE {
